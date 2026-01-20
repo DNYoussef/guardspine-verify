@@ -1,0 +1,96 @@
+{
+  "_comment": "TAMPERED BUNDLE - hash chain has been modified",
+  "_expected_result": "FAIL - Hash chain verification should fail",
+  "_tampered_field": "immutability_proof.hash_chain.entries[1].previous_hash",
+
+  "bundle_id": "test-tampered-001",
+  "bead_id": "BEAD-TEST-002",
+  "artifact_id": "test:example/tampered.py",
+  "from_version_id": "v1",
+  "to_version_id": "v2",
+  "risk_tier": "L2",
+  "scope": {
+    "assertion_type": "change_approval",
+    "assertion_text": "This bundle has been tampered with",
+    "artifact_id": "test:example/tampered.py",
+    "version_from": "v1",
+    "version_to": "v2",
+    "policy_ids": ["test-policy-001"],
+    "risk_tier_assessed": "L2",
+    "assessment_date": "2024-01-15T10:00:00Z"
+  },
+  "items": [
+    {
+      "item_id": "i-001-diff",
+      "evidence_type": "diff",
+      "content_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "content": {
+        "diff_id": "diff-v1-v2",
+        "algorithm": "myers",
+        "from_hash": "sha256:abc123",
+        "to_hash": "sha256:def456",
+        "hunks": [],
+        "stats": {"additions": 0, "deletions": 0, "changes": 0}
+      },
+      "created_at": "2024-01-15T10:00:00Z"
+    },
+    {
+      "item_id": "i-002-approval",
+      "evidence_type": "approval",
+      "content_hash": "sha256:d7a8fbb307d7809469ca9abcb0082e4f8d5651e46d3cdb762d02d0bf37c9e592",
+      "content": {
+        "approval_id": "APR-TEST-002",
+        "approver": {
+          "signer_id": "usr-attacker",
+          "signer_type": "human",
+          "display_name": "Attacker",
+          "email": "attacker@example.com"
+        },
+        "decision": "approved",
+        "rationale": "Malicious approval injected after the fact",
+        "decided_at": "2024-01-15T10:05:00Z"
+      },
+      "created_at": "2024-01-15T10:05:00Z"
+    }
+  ],
+  "signatures": [],
+  "immutability_proof": {
+    "proof_id": "proof-tampered-001",
+    "bundle_id": "test-tampered-001",
+    "root_hash": "sha256:a948904f2f0f479b8f8564cbf12dae5e65c9f2cd8cfb8c5a5d9a5e5b5c5d5e5f",
+    "hash_algorithm": "sha256",
+    "hash_chain": {
+      "chain_id": "chain-tampered-001",
+      "entries": [
+        {
+          "sequence_number": 0,
+          "content_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "previous_hash": null,
+          "timestamp": "2024-01-15T10:00:00Z",
+          "content_type": "diff",
+          "content_id": "i-001-diff"
+        },
+        {
+          "sequence_number": 1,
+          "content_hash": "sha256:d7a8fbb307d7809469ca9abcb0082e4f8d5651e46d3cdb762d02d0bf37c9e592",
+          "previous_hash": "sha256:TAMPERED_WRONG_HASH_TO_BREAK_CHAIN_VERIFICATION",
+          "timestamp": "2024-01-15T10:05:00Z",
+          "content_type": "approval",
+          "content_id": "i-002-approval"
+        }
+      ],
+      "created_at": "2024-01-15T10:00:00Z"
+    },
+    "verified_at": null,
+    "verification_status": "pending"
+  },
+  "retention": {
+    "policy": "standard",
+    "retention_days": 365,
+    "created_at": "2024-01-15T10:00:00Z",
+    "expires_at": "2025-01-15T10:00:00Z",
+    "legal_hold": false
+  },
+  "created_at": "2024-01-15T10:00:00Z",
+  "updated_at": "2024-01-15T10:07:00Z"
+}

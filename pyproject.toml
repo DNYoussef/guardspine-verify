@@ -46,10 +46,10 @@ dev = [
 guardspine-verify = "guardspine_verify.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/guardspine/guardspine-verify"
-Documentation = "https://guardspine.io/docs/verify"
-Repository = "https://github.com/guardspine/guardspine-verify"
-Issues = "https://github.com/guardspine/guardspine-verify/issues"
+Homepage = "https://github.com/DNYoussef/guardspine-verify"
+Documentation = "https://github.com/DNYoussef/guardspine-verify#readme"
+Repository = "https://github.com/DNYoussef/guardspine-verify"
+Issues = "https://github.com/DNYoussef/guardspine-verify/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["guardspine_verify"]
