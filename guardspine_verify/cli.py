@@ -28,8 +28,16 @@ console = Console()
     default="text",
     help="Output format",
 )
+@click.option(
+    "-k",
+    "--public-key",
+    "public_key_path",
+    type=click.Path(exists=True),
+    default=None,
+    help="Path to PEM public key for cryptographic signature verification",
+)
 @click.version_option(__version__, prog_name="guardspine-verify")
-def main(bundle_path: str, verbose: bool, output_format: str) -> None:
+def main(bundle_path: str, verbose: bool, output_format: str, public_key_path: str | None) -> None:
     """
     Verify a GuardSpine evidence bundle.
 
@@ -39,11 +47,21 @@ def main(bundle_path: str, verbose: bool, output_format: str) -> None:
       0 - Bundle verified successfully
       1 - Verification failed
       2 - Invalid input
+
+    Examples:
+      guardspine-verify report.json
+      guardspine-verify report.json --public-key signer.pub
+      guardspine-verify bundle.zip -k signer.pub --verbose
     """
     path = Path(bundle_path)
 
+    # Load public key if provided
+    public_key_pem: bytes | None = None
+    if public_key_path:
+        public_key_pem = Path(public_key_path).read_bytes()
+
     if output_format == "json":
-        result = verify_bundle(path)
+        result = verify_bundle(path, public_key_pem=public_key_pem)
         output = {
             "verified": result.verified,
             "status": result.status,
@@ -51,6 +69,7 @@ def main(bundle_path: str, verbose: bool, output_format: str) -> None:
             "root_hash_status": result.root_hash_status,
             "content_hash_status": result.content_hash_status,
             "signature_status": result.signature_status,
+            "cryptographically_verified": result.details.get("signatures", {}).get("cryptographically_verified", False),
             "errors": result.errors,
             "warnings": result.warnings,
             "verified_at": result.verified_at.isoformat(),
@@ -62,16 +81,17 @@ def main(bundle_path: str, verbose: bool, output_format: str) -> None:
 
     # Text output
     console.print()
+    key_info = f"\nPublic Key: [cyan]{Path(public_key_path).name}[/cyan]" if public_key_path else ""
     console.print(
         Panel.fit(
             f"[bold]GuardSpine Verify v{__version__}[/bold]\n"
-            f"Verifying: [cyan]{path.name}[/cyan]",
+            f"Verifying: [cyan]{path.name}[/cyan]{key_info}",
             border_style="blue",
         )
     )
     console.print()
 
-    result = verify_bundle(path)
+    result = verify_bundle(path, public_key_pem=public_key_pem)
 
     # Status table
     table = Table(title="Verification Results", show_header=True)
@@ -126,15 +146,21 @@ def main(bundle_path: str, verbose: bool, output_format: str) -> None:
         console.print()
 
     # Overall result
+    crypto_verified = result.details.get("signatures", {}).get("cryptographically_verified", False)
     if result.verified:
-        console.print(
-            Panel(
-                "[green bold]BUNDLE VERIFIED[/green bold]\n\n"
+        if crypto_verified:
+            msg = (
+                "[green bold]BUNDLE VERIFIED (CRYPTOGRAPHICALLY)[/green bold]\n\n"
                 "The evidence bundle integrity has been verified.\n"
-                "All hash chains, content hashes, and signatures are valid.",
-                border_style="green",
+                "All hash chains, content hashes, and [bold]cryptographic signatures[/bold] are valid."
             )
-        )
+        else:
+            msg = (
+                "[green bold]BUNDLE VERIFIED (FORMAT ONLY)[/green bold]\n\n"
+                "The evidence bundle format and hash integrity verified.\n"
+                "[yellow]Note: Signatures validated format only. Provide --public-key for cryptographic verification.[/yellow]"
+            )
+        console.print(Panel(msg, border_style="green"))
         sys.exit(0)
     else:
         console.print(
@@ -155,7 +181,11 @@ def _get_detail(detail: dict) -> str:
     if "items_checked" in detail:
         return f"{detail['items_checked']} items checked"
     if "signatures_checked" in detail:
-        return f"{detail['signatures_checked']}/{detail.get('signatures_total', '?')} signatures"
+        crypto_count = detail.get("crypto_verified_count", 0)
+        total = detail.get("signatures_total", "?")
+        if crypto_count > 0:
+            return f"{crypto_count}/{total} cryptographically verified"
+        return f"{detail['signatures_checked']}/{total} format validated"
     if detail.get("warnings"):
         return detail["warnings"][0]
     return ""

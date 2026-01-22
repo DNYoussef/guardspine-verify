@@ -45,7 +45,10 @@ def compute_sha256(data: bytes) -> str:
     return f"sha256:{h}"
 
 
-def verify_bundle(path: str | Path) -> VerificationResult:
+def verify_bundle(
+    path: str | Path,
+    public_key_pem: bytes | None = None,
+) -> VerificationResult:
     """
     Verify a bundle from a file path.
 
@@ -55,6 +58,7 @@ def verify_bundle(path: str | Path) -> VerificationResult:
 
     Args:
         path: Path to the bundle file
+        public_key_pem: Optional PEM-encoded public key for signature verification
 
     Returns:
         VerificationResult with verification status
@@ -89,7 +93,7 @@ def verify_bundle(path: str | Path) -> VerificationResult:
                 errors=[f"Unsupported file format: {path.suffix}"],
             )
 
-        return verify_bundle_data(bundle)
+        return verify_bundle_data(bundle, public_key_pem=public_key_pem)
 
     except json.JSONDecodeError as e:
         return VerificationResult(
@@ -125,7 +129,10 @@ def _load_zip_bundle(path: Path) -> dict[str, Any]:
         raise ValueError("No bundle.json found in ZIP file")
 
 
-def verify_bundle_data(bundle: dict[str, Any]) -> VerificationResult:
+def verify_bundle_data(
+    bundle: dict[str, Any],
+    public_key_pem: bytes | None = None,
+) -> VerificationResult:
     """
     Verify a bundle from its data dictionary.
 
@@ -133,10 +140,11 @@ def verify_bundle_data(bundle: dict[str, Any]) -> VerificationResult:
     1. Hash chain integrity
     2. Root hash validation
     3. Content hash validation
-    4. Signature verification
+    4. Signature verification (cryptographic if public_key provided)
 
     Args:
         bundle: Bundle data as dictionary
+        public_key_pem: Optional PEM-encoded public key for cryptographic verification
 
     Returns:
         VerificationResult with verification status
@@ -167,7 +175,7 @@ def verify_bundle_data(bundle: dict[str, Any]) -> VerificationResult:
     details["content_hashes"] = content_hash_result
 
     # 4. Verify signatures (if any)
-    signature_result = verify_signatures(bundle)
+    signature_result = verify_signatures(bundle, public_key_pem=public_key_pem)
     signature_status = "verified" if signature_result["valid"] else "mismatch"
     if not signature_result["valid"]:
         errors.extend(signature_result.get("errors", []))
@@ -337,16 +345,19 @@ def verify_content_hashes(bundle: dict[str, Any]) -> dict[str, Any]:
     return {"valid": len(errors) == 0, "errors": errors, "items_checked": checked}
 
 
-def verify_signatures(bundle: dict[str, Any]) -> dict[str, Any]:
+def verify_signatures(
+    bundle: dict[str, Any],
+    public_key_pem: bytes | None = None,
+) -> dict[str, Any]:
     """
     Verify cryptographic signatures.
 
-    Note: Full signature verification requires the signer's public key.
-    This implementation validates signature format and reports
-    which signatures are present.
+    When public_key_pem is provided, performs actual cryptographic verification.
+    Otherwise, only validates signature format and structure.
 
     Args:
         bundle: Bundle data
+        public_key_pem: Optional PEM-encoded public key for cryptographic verification
 
     Returns:
         Dict with 'valid' bool, 'errors' list, and 'warnings' list
@@ -358,68 +369,137 @@ def verify_signatures(bundle: dict[str, Any]) -> dict[str, Any]:
             "valid": True,
             "warnings": ["No signatures present - bundle is unsigned"],
             "signatures_checked": 0,
+            "cryptographically_verified": False,
         }
 
     errors: list[str] = []
     warnings: list[str] = []
     verified_count = 0
+    crypto_verified_count = 0
 
     for sig in signatures:
-        sig_id = sig.get("signature_id", "unknown")
-        algorithm = sig.get("algorithm")
+        sig_id = sig.get("signature_id", sig.get("signer", "unknown"))
+        algorithm = sig.get("algorithm") or sig.get("type")
         signer = sig.get("signer", {})
-        signature_value = sig.get("signature_value")
-        content_hash = sig.get("content_hash")
+        signature_value = sig.get("signature_value") or sig.get("signature")
+
+        # Handle both old schema (signer as dict) and new schema (signer as string)
+        if isinstance(signer, dict):
+            signer_name = signer.get("display_name", "unknown")
+            signer_type = signer.get("signer_type", "unknown")
+        else:
+            signer_name = signer
+            signer_type = "service"
 
         # Validate required fields
         if not algorithm:
-            errors.append(f"Signature {sig_id}: missing algorithm")
+            errors.append(f"Signature {sig_id}: missing algorithm/type")
             continue
 
-        if algorithm not in ["ed25519", "rsa-sha256", "ecdsa-p256"]:
+        supported_algorithms = ["ed25519", "rsa-sha256", "ecdsa-p256", "ecdsa-sha256", "hmac-sha256"]
+        if algorithm not in supported_algorithms:
             errors.append(f"Signature {sig_id}: unsupported algorithm {algorithm}")
             continue
 
         if not signature_value:
-            errors.append(f"Signature {sig_id}: missing signature_value")
+            errors.append(f"Signature {sig_id}: missing signature_value/signature")
             continue
 
-        if not content_hash:
-            errors.append(f"Signature {sig_id}: missing content_hash")
-            continue
+        # Validate base64 encoding (skip for HMAC which may be hex)
+        if algorithm != "hmac-sha256":
+            try:
+                base64.b64decode(signature_value)
+            except Exception:
+                errors.append(f"Signature {sig_id}: invalid base64 encoding")
+                continue
 
-        # Validate base64 encoding
-        try:
-            base64.b64decode(signature_value)
-        except Exception:
-            errors.append(f"Signature {sig_id}: invalid base64 encoding")
-            continue
+        # Attempt cryptographic verification if public key is provided
+        if public_key_pem and algorithm != "hmac-sha256":
+            # Build content to verify (must match what was signed)
+            content_to_verify = _build_content_for_verification(bundle)
 
-        # Note: Full verification requires the public key
-        # which would need to be fetched from a key registry
-        signer_type = signer.get("signer_type", "unknown")
-        signer_name = signer.get("display_name", "unknown")
-
-        if signer.get("public_key_id"):
-            warnings.append(
-                f"Signature {sig_id} by {signer_name} ({signer_type}): "
-                f"format valid, public key verification requires key registry"
-            )
-        else:
-            warnings.append(
-                f"Signature {sig_id} by {signer_name} ({signer_type}): "
-                f"format valid, no public_key_id for verification"
+            is_valid = verify_signature_with_key(
+                signature=sig,
+                public_key_pem=public_key_pem,
+                content_to_verify=content_to_verify,
             )
 
-        verified_count += 1
+            if is_valid:
+                crypto_verified_count += 1
+                verified_count += 1
+            else:
+                errors.append(
+                    f"Signature {sig_id} by {signer_name}: "
+                    f"CRYPTOGRAPHIC VERIFICATION FAILED"
+                )
+        elif algorithm == "hmac-sha256":
+            warnings.append(
+                f"Signature {sig_id} by {signer_name}: "
+                f"HMAC-SHA256 requires shared secret (not public key)"
+            )
+            verified_count += 1  # Format is valid
+        elif not public_key_pem:
+            warnings.append(
+                f"Signature {sig_id} by {signer_name} ({algorithm}): "
+                f"FORMAT VALID ONLY - no public key provided for cryptographic verification"
+            )
+            verified_count += 1  # Format is valid
+
+    # Determine overall validity
+    # If public key was provided, require at least one crypto verification
+    if public_key_pem:
+        valid = len(errors) == 0 and crypto_verified_count > 0
+    else:
+        valid = len(errors) == 0
 
     return {
-        "valid": len(errors) == 0,
+        "valid": valid,
         "errors": errors,
         "warnings": warnings,
         "signatures_checked": verified_count,
         "signatures_total": len(signatures),
+        "cryptographically_verified": crypto_verified_count > 0,
+        "crypto_verified_count": crypto_verified_count,
     }
+
+
+def _build_content_for_verification(bundle: dict[str, Any]) -> bytes:
+    """Build the canonical content that was signed for verification."""
+    # Try new CodeGuard format first (hash_chain, summary, provenance)
+    if "hash_chain" in bundle:
+        canonical = json.dumps(
+            {
+                "hash_chain": bundle.get("hash_chain", {}),
+                "summary": bundle.get("summary", {}),
+                "provenance": bundle.get("provenance", {}),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return canonical.encode()
+
+    # Try github-action format (bundle_id, hash_chain, summary)
+    if "bundle_id" in bundle:
+        canonical = json.dumps(
+            {
+                "bundle_id": bundle["bundle_id"],
+                "hash_chain": bundle.get("hash_chain", {}),
+                "summary": bundle.get("summary", {}),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return canonical.encode()
+
+    # Fallback: use immutability_proof if present
+    if "immutability_proof" in bundle:
+        proof = bundle["immutability_proof"]
+        canonical = json.dumps(proof, sort_keys=True, separators=(",", ":"))
+        return canonical.encode()
+
+    # Last resort: hash the entire bundle
+    canonical = json.dumps(bundle, sort_keys=True, separators=(",", ":"))
+    return canonical.encode()
 
 
 def verify_signature_with_key(
