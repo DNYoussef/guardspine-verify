@@ -55,10 +55,17 @@ def main(bundle_path: str, verbose: bool, output_format: str, public_key_path: s
     """
     path = Path(bundle_path)
 
-    # Load public key if provided
+    # Load and validate public key if provided
     public_key_pem: bytes | None = None
     if public_key_path:
-        public_key_pem = Path(public_key_path).read_bytes()
+        try:
+            public_key_pem = Path(public_key_path).read_bytes()
+        except OSError as e:
+            console.print(f"[red]Error reading public key file: {e}[/red]")
+            sys.exit(2)
+        if not public_key_pem.strip().startswith(b"-----BEGIN"):
+            console.print("[red]Error: Public key file does not appear to be PEM-encoded.[/red]")
+            sys.exit(2)
 
     if output_format == "json":
         result = verify_bundle(path, public_key_pem=public_key_pem)

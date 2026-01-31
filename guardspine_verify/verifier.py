@@ -45,6 +45,32 @@ def compute_sha256(data: bytes) -> str:
     return f"sha256:{h}"
 
 
+def _validate_public_key_pem(public_key_pem: bytes) -> None:
+    """
+    Validate that the provided bytes are a well-formed PEM public key.
+
+    Raises:
+        ValueError: If the key cannot be loaded or is not a supported public key type.
+    """
+    try:
+        key = serialization.load_pem_public_key(public_key_pem)
+    except (ValueError, TypeError) as exc:
+        raise ValueError(f"Invalid PEM public key: {exc}") from exc
+    except Exception as exc:
+        raise ValueError(f"Failed to load public key: {exc}") from exc
+
+    supported_types = (
+        ed25519.Ed25519PublicKey,
+        rsa.RSAPublicKey,
+        ec.EllipticCurvePublicKey,
+    )
+    if not isinstance(key, supported_types):
+        raise ValueError(
+            f"Unsupported public key type: {type(key).__name__}. "
+            f"Supported: Ed25519, RSA, ECDSA"
+        )
+
+
 def verify_bundle(
     path: str | Path,
     public_key_pem: bytes | None = None,
@@ -64,6 +90,21 @@ def verify_bundle(
         VerificationResult with verification status
     """
     path = Path(path)
+
+    # Validate public key upfront if provided
+    if public_key_pem is not None:
+        try:
+            _validate_public_key_pem(public_key_pem)
+        except ValueError as e:
+            return VerificationResult(
+                verified=False,
+                status="error",
+                hash_chain_status="unknown",
+                root_hash_status="unknown",
+                content_hash_status="unknown",
+                signature_status="unknown",
+                errors=[str(e)],
+            )
 
     if not path.exists():
         return VerificationResult(
@@ -149,6 +190,21 @@ def verify_bundle_data(
     Returns:
         VerificationResult with verification status
     """
+    # Validate public key upfront if provided
+    if public_key_pem is not None:
+        try:
+            _validate_public_key_pem(public_key_pem)
+        except ValueError as e:
+            return VerificationResult(
+                verified=False,
+                status="error",
+                hash_chain_status="unknown",
+                root_hash_status="unknown",
+                content_hash_status="unknown",
+                signature_status="unknown",
+                errors=[str(e)],
+            )
+
     errors: list[str] = []
     warnings: list[str] = []
     details: dict[str, Any] = {}
@@ -229,6 +285,12 @@ def verify_hash_chain(bundle: dict[str, Any]) -> dict[str, Any]:
 
     errors: list[str] = []
 
+    # Validate entry structure
+    for i, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            errors.append(f"Hash chain entry at position {i} is not a dict")
+            return {"valid": False, "errors": errors, "entries_checked": 0}
+
     # Check sequence continuity
     for i, entry in enumerate(entries):
         if entry.get("sequence_number") != i:
@@ -282,8 +344,28 @@ def verify_root_hash(bundle: dict[str, Any]) -> dict[str, Any]:
 
     # Compute root hash by concatenating all content hashes
     content_hashes = [e.get("content_hash", "") for e in entries]
+
+    # Validate hash format before concatenation
+    import re
+    _HEX_RE = re.compile(r"^[0-9a-f]{64}$")
+    hash_values: list[str] = []
+    for idx, h in enumerate(content_hashes):
+        if not isinstance(h, str):
+            return {
+                "valid": False,
+                "errors": [f"Hash chain entry {idx}: content_hash is not a string"],
+            }
+        raw = h.replace("sha256:", "", 1)
+        if not _HEX_RE.match(raw):
+            return {
+                "valid": False,
+                "errors": [
+                    f"Hash chain entry {idx}: content_hash is not valid sha256 hex: {h!r}"
+                ],
+            }
+        hash_values.append(raw)
+
     # Remove 'sha256:' prefix for concatenation
-    hash_values = [h.replace("sha256:", "") for h in content_hashes]
     concatenated = "".join(hash_values).encode("utf-8")
 
     computed_root = compute_sha256(concatenated)
@@ -396,8 +478,10 @@ def verify_signatures(
             errors.append(f"Signature {sig_id}: missing algorithm/type")
             continue
 
-        supported_algorithms = ["ed25519", "rsa-sha256", "ecdsa-p256", "ecdsa-sha256", "hmac-sha256"]
-        if algorithm not in supported_algorithms:
+        _SUPPORTED_ALGORITHMS = {
+            "ed25519", "rsa-sha256", "ecdsa-p256", "ecdsa-sha256", "hmac-sha256",
+        }
+        if algorithm not in _SUPPORTED_ALGORITHMS:
             errors.append(f"Signature {sig_id}: unsupported algorithm {algorithm}")
             continue
 
@@ -519,11 +603,26 @@ def verify_signature_with_key(
         True if signature is valid, False otherwise
     """
     algorithm = signature.get("algorithm")
-    signature_value = base64.b64decode(signature.get("signature_value", ""))
+    raw_sig = signature.get("signature_value") or signature.get("signature", "")
+
+    # Validate signature_value is a string before decoding
+    if not isinstance(raw_sig, str) or not raw_sig:
+        return False
+
+    try:
+        signature_value = base64.b64decode(raw_sig)
+    except Exception:
+        return False
+
+    if not isinstance(public_key_pem, bytes) or not public_key_pem:
+        return False
 
     try:
         public_key = serialization.load_pem_public_key(public_key_pem)
+    except (ValueError, TypeError):
+        return False
 
+    try:
         if algorithm == "ed25519":
             if not isinstance(public_key, ed25519.Ed25519PublicKey):
                 return False
@@ -541,7 +640,7 @@ def verify_signature_with_key(
             )
             return True
 
-        elif algorithm == "ecdsa-p256":
+        elif algorithm in ("ecdsa-p256", "ecdsa-sha256"):
             if not isinstance(public_key, ec.EllipticCurvePublicKey):
                 return False
             public_key.verify(
@@ -556,4 +655,5 @@ def verify_signature_with_key(
     except InvalidSignature:
         return False
     except Exception:
+        # Log-worthy but not a crash -- key/sig mismatch or corrupt data
         return False
