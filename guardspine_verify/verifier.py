@@ -33,7 +33,10 @@ class VerificationResult:
 
 
 def canonical_json(obj: Any) -> bytes:
-    """Convert object to canonical JSON bytes (RFC 8785 style)."""
+    """Convert object to canonical JSON bytes (RFC 8785 JCS approximation).
+
+    Uses sorted keys, compact separators, and ensure_ascii=False per RFC 8785.
+    """
     return json.dumps(
         obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False
     ).encode("utf-8")
@@ -74,6 +77,7 @@ def _validate_public_key_pem(public_key_pem: bytes) -> None:
 def verify_bundle(
     path: str | Path,
     public_key_pem: bytes | None = None,
+    hmac_secret: bytes | None = None,
 ) -> VerificationResult:
     """
     Verify a bundle from a file path.
@@ -134,7 +138,7 @@ def verify_bundle(
                 errors=[f"Unsupported file format: {path.suffix}"],
             )
 
-        return verify_bundle_data(bundle, public_key_pem=public_key_pem)
+        return verify_bundle_data(bundle, public_key_pem=public_key_pem, hmac_secret=hmac_secret)
 
     except json.JSONDecodeError as e:
         return VerificationResult(
@@ -173,6 +177,7 @@ def _load_zip_bundle(path: Path) -> dict[str, Any]:
 def verify_bundle_data(
     bundle: dict[str, Any],
     public_key_pem: bytes | None = None,
+    hmac_secret: bytes | None = None,
 ) -> VerificationResult:
     """
     Verify a bundle from its data dictionary.
@@ -231,7 +236,7 @@ def verify_bundle_data(
     details["content_hashes"] = content_hash_result
 
     # 4. Verify signatures (if any)
-    signature_result = verify_signatures(bundle, public_key_pem=public_key_pem)
+    signature_result = verify_signatures(bundle, public_key_pem=public_key_pem, hmac_secret=hmac_secret)
     signature_status = "verified" if signature_result["valid"] else "mismatch"
     if not signature_result["valid"]:
         errors.extend(signature_result.get("errors", []))
@@ -261,11 +266,13 @@ def verify_bundle_data(
 
 def verify_hash_chain(bundle: dict[str, Any]) -> dict[str, Any]:
     """
-    Verify the hash chain integrity.
+    Verify the hash chain integrity (v0.2.0 schema).
 
     Checks:
-    - Each entry's previous_hash matches the prior entry's content_hash
+    - Each entry has item_id and content_type fields
+    - chain_hash = SHA-256("sequence|item_id|content_type|content_hash|previous_hash")
     - Sequence numbers are contiguous starting from 0
+    - Previous chain_hash linkage is correct
 
     Args:
         bundle: Bundle data
@@ -275,7 +282,7 @@ def verify_hash_chain(bundle: dict[str, Any]) -> dict[str, Any]:
     """
     proof = bundle.get("immutability_proof")
     if not proof:
-        return {"valid": True, "warnings": ["No immutability proof present"]}
+        return {"valid": False, "errors": ["Missing immutability_proof"]}
 
     chain = proof.get("hash_chain", {})
     entries = chain.get("entries", [])
@@ -291,26 +298,46 @@ def verify_hash_chain(bundle: dict[str, Any]) -> dict[str, Any]:
             errors.append(f"Hash chain entry at position {i} is not a dict")
             return {"valid": False, "errors": errors, "entries_checked": 0}
 
-    # Check sequence continuity
+    # Check sequence continuity and required v0.2.0 fields
     for i, entry in enumerate(entries):
         if entry.get("sequence_number") != i:
             errors.append(
                 f"Sequence gap at position {i}: expected {i}, got {entry.get('sequence_number')}"
             )
+        if "item_id" not in entry:
+            errors.append(f"Hash chain entry {i}: missing required field 'item_id'")
+        if "content_type" not in entry:
+            errors.append(f"Hash chain entry {i}: missing required field 'content_type'")
 
-    # Check previous hash references
-    for i in range(1, len(entries)):
-        current = entries[i]
-        previous = entries[i - 1]
+    # Recompute and verify chain_hash for each entry
+    previous_hash = "genesis"
+    for i, entry in enumerate(entries):
+        seq = entry.get("sequence_number", i)
+        item_id = entry.get("item_id", "")
+        content_type = entry.get("content_type", "")
+        content_hash = entry.get("content_hash", "")
+        prev_hash = entry.get("previous_hash", "")
 
-        expected_prev = previous.get("content_hash")
-        actual_prev = current.get("previous_hash")
-
-        if expected_prev != actual_prev:
+        # Verify previous_hash linkage
+        if i > 0 and prev_hash != previous_hash:
             errors.append(
                 f"Hash chain broken at sequence {i}: "
-                f"expected previous_hash={expected_prev}, got {actual_prev}"
+                f"expected previous_hash={previous_hash}, got {prev_hash}"
             )
+
+        # Recompute chain_hash: SHA-256("sequence|item_id|content_type|content_hash|previous_hash")
+        chain_input = f"{seq}|{item_id}|{content_type}|{content_hash}|{prev_hash}"
+        computed_chain_hash = compute_sha256(chain_input.encode("utf-8"))
+
+        stored_chain_hash = entry.get("chain_hash")
+        if stored_chain_hash and computed_chain_hash != stored_chain_hash:
+            errors.append(
+                f"Hash chain entry {i}: chain_hash mismatch "
+                f"(computed={computed_chain_hash}, stored={stored_chain_hash})"
+            )
+
+        # Use the stored chain_hash as previous_hash for the next entry
+        previous_hash = stored_chain_hash or computed_chain_hash
 
     return {"valid": len(errors) == 0, "errors": errors, "entries_checked": len(entries)}
 
@@ -330,11 +357,11 @@ def verify_root_hash(bundle: dict[str, Any]) -> dict[str, Any]:
     """
     proof = bundle.get("immutability_proof")
     if not proof:
-        return {"valid": True, "warnings": ["No immutability proof present"]}
+        return {"valid": False, "errors": ["Missing immutability_proof"]}
 
     stored_root = proof.get("root_hash")
     if not stored_root:
-        return {"valid": True, "warnings": ["No root hash present"]}
+        return {"valid": False, "errors": ["Missing root_hash in immutability_proof"]}
 
     chain = proof.get("hash_chain", {})
     entries = chain.get("entries", [])
@@ -342,31 +369,28 @@ def verify_root_hash(bundle: dict[str, Any]) -> dict[str, Any]:
     if not entries:
         return {"valid": True, "warnings": ["Empty hash chain"]}
 
-    # Compute root hash by concatenating all content hashes
-    content_hashes = [e.get("content_hash", "") for e in entries]
-
-    # Validate hash format before concatenation
+    # Compute root hash as SHA-256 of concatenation of all chain_hash values
     import re
     _HEX_RE = re.compile(r"^[0-9a-f]{64}$")
-    hash_values: list[str] = []
-    for idx, h in enumerate(content_hashes):
-        if not isinstance(h, str):
+    chain_hash_values: list[str] = []
+    for idx, entry in enumerate(entries):
+        ch = entry.get("chain_hash", "")
+        if not isinstance(ch, str):
             return {
                 "valid": False,
-                "errors": [f"Hash chain entry {idx}: content_hash is not a string"],
+                "errors": [f"Hash chain entry {idx}: chain_hash is not a string"],
             }
-        raw = h.replace("sha256:", "", 1)
+        raw = ch.replace("sha256:", "", 1)
         if not _HEX_RE.match(raw):
             return {
                 "valid": False,
                 "errors": [
-                    f"Hash chain entry {idx}: content_hash is not valid sha256 hex: {h!r}"
+                    f"Hash chain entry {idx}: chain_hash is not valid sha256 hex: {ch!r}"
                 ],
             }
-        hash_values.append(raw)
+        chain_hash_values.append(raw)
 
-    # Remove 'sha256:' prefix for concatenation
-    concatenated = "".join(hash_values).encode("utf-8")
+    concatenated = "".join(chain_hash_values).encode("utf-8")
 
     computed_root = compute_sha256(concatenated)
 
@@ -430,6 +454,7 @@ def verify_content_hashes(bundle: dict[str, Any]) -> dict[str, Any]:
 def verify_signatures(
     bundle: dict[str, Any],
     public_key_pem: bytes | None = None,
+    hmac_secret: bytes | None = None,
 ) -> dict[str, Any]:
     """
     Verify cryptographic signatures.
@@ -517,11 +542,24 @@ def verify_signatures(
                     f"CRYPTOGRAPHIC VERIFICATION FAILED"
                 )
         elif algorithm == "hmac-sha256":
-            warnings.append(
-                f"Signature {sig_id} by {signer_name}: "
-                f"HMAC-SHA256 requires shared secret (not public key)"
-            )
-            verified_count += 1  # Format is valid
+            if not hmac_secret:
+                errors.append(
+                    f"Signature {sig_id} by {signer_name}: "
+                    f"HMAC-SHA256 requires a secret parameter but none was provided"
+                )
+                continue
+            import hmac as hmac_mod
+            content_to_verify = _build_content_for_verification(bundle)
+            expected_mac = hmac_mod.new(hmac_secret, content_to_verify, hashlib.sha256).hexdigest()
+            # signature_value may be hex or base64-encoded hex
+            if hmac_mod.compare_digest(expected_mac, signature_value):
+                crypto_verified_count += 1
+                verified_count += 1
+            else:
+                errors.append(
+                    f"Signature {sig_id} by {signer_name}: "
+                    f"HMAC-SHA256 VERIFICATION FAILED"
+                )
         elif not public_key_pem:
             warnings.append(
                 f"Signature {sig_id} by {signer_name} ({algorithm}): "
@@ -548,42 +586,15 @@ def verify_signatures(
 
 
 def _build_content_for_verification(bundle: dict[str, Any]) -> bytes:
-    """Build the canonical content that was signed for verification."""
-    # Try new CodeGuard format first (hash_chain, summary, provenance)
-    if "hash_chain" in bundle:
-        canonical = json.dumps(
-            {
-                "hash_chain": bundle.get("hash_chain", {}),
-                "summary": bundle.get("summary", {}),
-                "provenance": bundle.get("provenance", {}),
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        return canonical.encode()
+    """Build the canonical content that was signed for verification.
 
-    # Try github-action format (bundle_id, hash_chain, summary)
-    if "bundle_id" in bundle:
-        canonical = json.dumps(
-            {
-                "bundle_id": bundle["bundle_id"],
-                "hash_chain": bundle.get("hash_chain", {}),
-                "summary": bundle.get("summary", {}),
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        return canonical.encode()
+    The bundle is serialized WITHOUT the 'signatures' array so that the
+    signature can be verified against the content it actually covers.
+    """
+    # Strip signatures from the bundle before canonicalization
+    bundle_without_sigs = {k: v for k, v in bundle.items() if k != "signatures"}
 
-    # Fallback: use immutability_proof if present
-    if "immutability_proof" in bundle:
-        proof = bundle["immutability_proof"]
-        canonical = json.dumps(proof, sort_keys=True, separators=(",", ":"))
-        return canonical.encode()
-
-    # Last resort: hash the entire bundle
-    canonical = json.dumps(bundle, sort_keys=True, separators=(",", ":"))
-    return canonical.encode()
+    return canonical_json(bundle_without_sigs)
 
 
 def verify_signature_with_key(
