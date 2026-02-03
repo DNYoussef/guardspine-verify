@@ -1,0 +1,39 @@
+{
+  "bundle_id": "external-signed-bundle-verify-001",
+  "version": "0.2.0",
+  "created_at": "2026-02-03T00:00:00Z",
+  "items": [
+    {
+      "item_id": "item-1",
+      "content_type": "guardspine/external",
+      "content": {
+        "message": "external signed bundle"
+      },
+      "content_hash": "sha256:93c9a6a22a04b94233a1b51d6d173050b6513f6663d1264d5f3638d34c08371d",
+      "sequence": 0
+    }
+  ],
+  "immutability_proof": {
+    "hash_chain": [
+      {
+        "sequence": 0,
+        "item_id": "item-1",
+        "content_type": "guardspine/external",
+        "content_hash": "sha256:93c9a6a22a04b94233a1b51d6d173050b6513f6663d1264d5f3638d34c08371d",
+        "previous_hash": "genesis",
+        "chain_hash": "sha256:5b76952a88f1b0e6fb4059dbae783ffdaa076c0fd75ffd26a18a4a90ab74468d"
+      }
+    ],
+    "root_hash": "sha256:a8fcb4e8354d6c4eca4d590c08bad19c7ab31b968df9dec5572cc1350866ec3f"
+  },
+  "signatures": [
+    {
+      "signature_id": "sig-external-verify-001",
+      "algorithm": "ed25519",
+      "signer_id": "external-signer",
+      "signature_value": "rdbXddLWcg2tTkBzSzpoX8V01jcy87NXODGzQ/mOReeFgk9cL5newxj+E9JtcDbpWZBMfwAsTzYwl1N7nkdDCQ==",
+      "signed_at": "2026-02-03T00:00:00Z",
+      "public_key_id": "PM0kHP/Js2GARLl9A22GFFk9iwF8NA8d7odzOFUXZUs="
+    }
+  ]
+}

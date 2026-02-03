@@ -4,6 +4,7 @@ Core verification logic for GuardSpine evidence bundles.
 
 import hashlib
 import json
+import math
 import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -33,13 +34,44 @@ class VerificationResult:
 
 
 def canonical_json(obj: Any) -> bytes:
-    """Convert object to canonical JSON bytes (RFC 8785 JCS approximation).
+    """Convert object to canonical JSON bytes (RFC 8785 compatible subset)."""
+    return _serialize_value(obj).encode("utf-8")
 
-    Uses sorted keys, compact separators, and ensure_ascii=False per RFC 8785.
-    """
-    return json.dumps(
-        obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False
-    ).encode("utf-8")
+
+def _serialize_value(value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return _serialize_number(value)
+    if isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, list):
+        return "[" + ",".join(_serialize_value(v) for v in value) + "]"
+    if isinstance(value, dict):
+        items = []
+        for key in sorted(value.keys()):
+            items.append(json.dumps(str(key), ensure_ascii=False) + ":" + _serialize_value(value[key]))
+        return "{" + ",".join(items) + "}"
+    # Fallback for non-JSON types
+    return "null"
+
+
+def _serialize_number(num: float) -> str:
+    if isinstance(num, bool):
+        return "true" if num else "false"
+    if isinstance(num, int):
+        return str(num)
+    if not math.isfinite(num):
+        return "null"
+    # Align with @guardspine/kernel canonicalization rules.
+    if num.is_integer():
+        # Only emit non-exponent integers within safe range
+        if abs(num) < 9_007_199_254_740_991 and abs(num) < 1e20:
+            return str(int(num))
+    # Use JSON serialization for floats (matches JS JSON.stringify)
+    return json.dumps(num, ensure_ascii=False)
 
 
 def compute_sha256(data: bytes) -> str:
@@ -78,6 +110,7 @@ def verify_bundle(
     path: str | Path,
     public_key_pem: bytes | None = None,
     hmac_secret: bytes | None = None,
+    require_signatures: bool = False,
 ) -> VerificationResult:
     """
     Verify a bundle from a file path.
@@ -89,6 +122,8 @@ def verify_bundle(
     Args:
         path: Path to the bundle file
         public_key_pem: Optional PEM-encoded public key for signature verification
+        hmac_secret: Optional HMAC secret for HMAC-SHA256 signature verification
+        require_signatures: If True, bundle MUST have valid signatures to pass
 
     Returns:
         VerificationResult with verification status
@@ -138,7 +173,12 @@ def verify_bundle(
                 errors=[f"Unsupported file format: {path.suffix}"],
             )
 
-        return verify_bundle_data(bundle, public_key_pem=public_key_pem, hmac_secret=hmac_secret)
+        return verify_bundle_data(
+            bundle,
+            public_key_pem=public_key_pem,
+            hmac_secret=hmac_secret,
+            require_signatures=require_signatures,
+        )
 
     except json.JSONDecodeError as e:
         return VerificationResult(
@@ -162,35 +202,88 @@ def verify_bundle(
         )
 
 
+# ZIP safety limits
+MAX_ZIP_SIZE_BYTES = 100 * 1024 * 1024  # 100 MB
+MAX_ZIP_ENTRIES = 1000
+MAX_BUNDLE_JSON_SIZE = 50 * 1024 * 1024  # 50 MB
+
+
 def _load_zip_bundle(path: Path) -> dict[str, Any]:
-    """Load bundle from ZIP export."""
+    """
+    Load bundle from ZIP export with safety limits.
+
+    Security:
+    - Rejects ZIP files larger than MAX_ZIP_SIZE_BYTES (100 MB)
+    - Rejects ZIP files with more than MAX_ZIP_ENTRIES entries
+    - Rejects bundle.json larger than MAX_BUNDLE_JSON_SIZE (50 MB)
+    - Prevents zip bomb attacks by checking compressed vs uncompressed ratio
+    """
+    # Check total ZIP file size
+    zip_size = path.stat().st_size
+    if zip_size > MAX_ZIP_SIZE_BYTES:
+        raise ValueError(
+            f"ZIP file too large: {zip_size:,} bytes (max: {MAX_ZIP_SIZE_BYTES:,} bytes)"
+        )
+
     with zipfile.ZipFile(path, "r") as zf:
+        # Check number of entries (zip bomb protection)
+        entry_count = len(zf.namelist())
+        if entry_count > MAX_ZIP_ENTRIES:
+            raise ValueError(
+                f"ZIP has too many entries: {entry_count} (max: {MAX_ZIP_ENTRIES})"
+            )
+
         # Look for bundle.json in the ZIP
         for name in zf.namelist():
             if name.endswith("bundle.json"):
+                # Check uncompressed size (zip bomb protection)
+                info = zf.getinfo(name)
+                if info.file_size > MAX_BUNDLE_JSON_SIZE:
+                    raise ValueError(
+                        f"bundle.json too large: {info.file_size:,} bytes "
+                        f"(max: {MAX_BUNDLE_JSON_SIZE:,} bytes)"
+                    )
+
+                # Check compression ratio (zip bomb protection)
+                if info.compress_size > 0:
+                    ratio = info.file_size / info.compress_size
+                    if ratio > 100:  # Suspicious compression ratio
+                        raise ValueError(
+                            f"Suspicious compression ratio: {ratio:.1f}x "
+                            f"(possible zip bomb)"
+                        )
+
                 with zf.open(name) as f:
                     return json.load(f)
 
         raise ValueError("No bundle.json found in ZIP file")
 
 
+# Supported bundle versions
+SUPPORTED_VERSIONS = ["0.2.0"]
+
+
 def verify_bundle_data(
     bundle: dict[str, Any],
     public_key_pem: bytes | None = None,
     hmac_secret: bytes | None = None,
+    require_signatures: bool = False,
 ) -> VerificationResult:
     """
     Verify a bundle from its data dictionary.
 
     Performs all verification checks:
-    1. Hash chain integrity
-    2. Root hash validation
-    3. Content hash validation
-    4. Signature verification (cryptographic if public_key provided)
+    1. Version validation (MUST be in SUPPORTED_VERSIONS)
+    2. Hash chain integrity
+    3. Root hash validation
+    4. Content hash validation
+    5. Signature verification (cryptographic if public_key provided)
 
     Args:
         bundle: Bundle data as dictionary
         public_key_pem: Optional PEM-encoded public key for cryptographic verification
+        hmac_secret: Optional HMAC secret for HMAC-SHA256 signature verification
+        require_signatures: If True, bundle MUST have valid signatures to pass
 
     Returns:
         VerificationResult with verification status
@@ -214,6 +307,17 @@ def verify_bundle_data(
     warnings: list[str] = []
     details: dict[str, Any] = {}
 
+    # 0. Verify bundle version
+    version = bundle.get("version")
+    if not version:
+        errors.append("Missing required field: version")
+    elif version not in SUPPORTED_VERSIONS:
+        errors.append(
+            f"Unsupported bundle version: {version}. "
+            f"Supported: {', '.join(SUPPORTED_VERSIONS)}"
+        )
+    details["version"] = {"value": version, "supported": version in SUPPORTED_VERSIONS if version else False}
+
     # 1. Verify hash chain
     hash_chain_result = verify_hash_chain(bundle)
     hash_chain_status = "verified" if hash_chain_result["valid"] else "mismatch"
@@ -235,6 +339,13 @@ def verify_bundle_data(
         errors.extend(content_hash_result.get("errors", []))
     details["content_hashes"] = content_hash_result
 
+    # 3.5. Verify chain-to-items BINDING (Task #11, #12, #13)
+    # Every item MUST have a corresponding chain entry with matching item_id
+    binding_result = verify_chain_to_items_binding(bundle)
+    if not binding_result["valid"]:
+        errors.extend(binding_result.get("errors", []))
+    details["chain_binding"] = binding_result
+
     # 4. Verify signatures (if any)
     signature_result = verify_signatures(bundle, public_key_pem=public_key_pem, hmac_secret=hmac_secret)
     signature_status = "verified" if signature_result["valid"] else "mismatch"
@@ -243,12 +354,32 @@ def verify_bundle_data(
     warnings.extend(signature_result.get("warnings", []))
     details["signatures"] = signature_result
 
+    # 5. Check signature requirement
+    signatures_present = len(bundle.get("signatures", [])) > 0
+    if require_signatures and not signatures_present:
+        errors.append(
+            "Bundle MUST have signatures when require_signatures=True, but none present"
+        )
+        signature_status = "missing"
+    elif require_signatures and not signature_result.get("cryptographically_verified", False):
+        # If signatures are present but not cryptographically verified
+        if public_key_pem is None and hmac_secret is None:
+            errors.append(
+                "require_signatures=True but no public_key_pem or hmac_secret provided "
+                "for cryptographic verification"
+            )
+            signature_status = "unverified"
+
     # Overall result
+    version_valid = version in SUPPORTED_VERSIONS if version else False
     all_valid = (
-        hash_chain_result["valid"]
+        version_valid
+        and hash_chain_result["valid"]
         and root_hash_result["valid"]
         and content_hash_result["valid"]
+        and binding_result["valid"]  # Chain-to-items binding
         and signature_result["valid"]
+        and (not require_signatures or signature_result.get("cryptographically_verified", False) or signatures_present)
     )
 
     return VerificationResult(
@@ -264,13 +395,25 @@ def verify_bundle_data(
     )
 
 
+def _extract_chain_entries(proof: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return hash chain entries for both v0.2.0 and legacy formats."""
+    chain = proof.get("hash_chain")
+    if isinstance(chain, list):
+        return chain
+    if isinstance(chain, dict):
+        entries = chain.get("entries")
+        if isinstance(entries, list):
+            return entries
+    return []
+
+
 def verify_hash_chain(bundle: dict[str, Any]) -> dict[str, Any]:
     """
     Verify the hash chain integrity (v0.2.0 schema).
 
     Checks:
     - Each entry has item_id and content_type fields
-    - chain_hash = SHA-256("sequence|item_id|content_type|content_hash|previous_hash")
+    - chain_hash = SHA-256(\"sequence|item_id|content_type|content_hash|previous_hash\")
     - Sequence numbers are contiguous starting from 0
     - Previous chain_hash linkage is correct
 
@@ -284,11 +427,9 @@ def verify_hash_chain(bundle: dict[str, Any]) -> dict[str, Any]:
     if not proof:
         return {"valid": False, "errors": ["Missing immutability_proof"]}
 
-    chain = proof.get("hash_chain", {})
-    entries = chain.get("entries", [])
-
+    entries = _extract_chain_entries(proof)
     if not entries:
-        return {"valid": True, "warnings": ["Empty hash chain"]}
+        return {"valid": False, "errors": ["Empty hash chain"]}
 
     errors: list[str] = []
 
@@ -300,9 +441,10 @@ def verify_hash_chain(bundle: dict[str, Any]) -> dict[str, Any]:
 
     # Check sequence continuity and required v0.2.0 fields
     for i, entry in enumerate(entries):
-        if entry.get("sequence_number") != i:
+        seq = entry.get("sequence", entry.get("sequence_number"))
+        if seq != i:
             errors.append(
-                f"Sequence gap at position {i}: expected {i}, got {entry.get('sequence_number')}"
+                f"Sequence gap at position {i}: expected {i}, got {seq}"
             )
         if "item_id" not in entry:
             errors.append(f"Hash chain entry {i}: missing required field 'item_id'")
@@ -312,7 +454,7 @@ def verify_hash_chain(bundle: dict[str, Any]) -> dict[str, Any]:
     # Recompute and verify chain_hash for each entry
     previous_hash = "genesis"
     for i, entry in enumerate(entries):
-        seq = entry.get("sequence_number", i)
+        seq = entry.get("sequence", entry.get("sequence_number", i))
         item_id = entry.get("item_id", "")
         content_type = entry.get("content_type", "")
         content_hash = entry.get("content_hash", "")
@@ -325,12 +467,14 @@ def verify_hash_chain(bundle: dict[str, Any]) -> dict[str, Any]:
                 f"expected previous_hash={previous_hash}, got {prev_hash}"
             )
 
-        # Recompute chain_hash: SHA-256("sequence|item_id|content_type|content_hash|previous_hash")
+        # Recompute chain_hash: SHA-256(\"sequence|item_id|content_type|content_hash|previous_hash\")
         chain_input = f"{seq}|{item_id}|{content_type}|{content_hash}|{prev_hash}"
         computed_chain_hash = compute_sha256(chain_input.encode("utf-8"))
 
         stored_chain_hash = entry.get("chain_hash")
-        if stored_chain_hash and computed_chain_hash != stored_chain_hash:
+        if not stored_chain_hash:
+            errors.append(f"Hash chain entry {i}: missing chain_hash")
+        elif computed_chain_hash != stored_chain_hash:
             errors.append(
                 f"Hash chain entry {i}: chain_hash mismatch "
                 f"(computed={computed_chain_hash}, stored={stored_chain_hash})"
@@ -363,15 +507,13 @@ def verify_root_hash(bundle: dict[str, Any]) -> dict[str, Any]:
     if not stored_root:
         return {"valid": False, "errors": ["Missing root_hash in immutability_proof"]}
 
-    chain = proof.get("hash_chain", {})
-    entries = chain.get("entries", [])
-
+    entries = _extract_chain_entries(proof)
     if not entries:
-        return {"valid": True, "warnings": ["Empty hash chain"]}
+        return {"valid": False, "errors": ["Empty hash chain"]}
 
     # Compute root hash as SHA-256 of concatenation of all chain_hash values
     import re
-    _HEX_RE = re.compile(r"^[0-9a-f]{64}$")
+    _HASH_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
     chain_hash_values: list[str] = []
     for idx, entry in enumerate(entries):
         ch = entry.get("chain_hash", "")
@@ -380,18 +522,16 @@ def verify_root_hash(bundle: dict[str, Any]) -> dict[str, Any]:
                 "valid": False,
                 "errors": [f"Hash chain entry {idx}: chain_hash is not a string"],
             }
-        raw = ch.replace("sha256:", "", 1)
-        if not _HEX_RE.match(raw):
+        if not _HASH_RE.match(ch):
             return {
                 "valid": False,
                 "errors": [
-                    f"Hash chain entry {idx}: chain_hash is not valid sha256 hex: {ch!r}"
+                    f"Hash chain entry {idx}: chain_hash is not valid sha256:hex: {ch!r}"
                 ],
             }
-        chain_hash_values.append(raw)
+        chain_hash_values.append(ch)
 
     concatenated = "".join(chain_hash_values).encode("utf-8")
-
     computed_root = compute_sha256(concatenated)
 
     if computed_root != stored_root:
@@ -403,6 +543,109 @@ def verify_root_hash(bundle: dict[str, Any]) -> dict[str, Any]:
         }
 
     return {"valid": True, "computed": computed_root, "stored": stored_root}
+
+
+def verify_chain_to_items_binding(bundle: dict[str, Any]) -> dict[str, Any]:
+    """
+    Verify chain-to-items BINDING: every item has a matching chain entry.
+
+    This is a critical security check that ensures:
+    1. COUNT: Number of items == number of chain entries
+    2. BINDING: Each item has a chain entry with matching item_id
+    3. CROSS-REFERENCE: Chain content_hash matches item content_hash
+
+    Without this check, an attacker could add items not covered by the hash chain,
+    which would then be "unbound" and could be modified without detection.
+
+    Args:
+        bundle: Bundle data
+
+    Returns:
+        Dict with 'valid' bool and 'errors' list
+    """
+    items = bundle.get("items", [])
+    proof = bundle.get("immutability_proof", {})
+    chain = _extract_chain_entries(proof)
+
+    errors: list[str] = []
+
+    # COUNT validation (Task #12)
+    if len(items) != len(chain):
+        errors.append(
+            f"Chain-to-items COUNT mismatch: {len(items)} items but {len(chain)} chain entries. "
+            f"Every item MUST have exactly one chain entry."
+        )
+
+    # Build lookup for chain entries by item_id
+    chain_by_item_id: dict[str, dict[str, Any]] = {}
+    for entry in chain:
+        entry_item_id = entry.get("item_id")
+        if entry_item_id:
+            if entry_item_id in chain_by_item_id:
+                errors.append(
+                    f"Duplicate item_id in hash chain: '{entry_item_id}'. "
+                    f"Each item_id MUST appear exactly once."
+                )
+            chain_by_item_id[entry_item_id] = entry
+
+    # BINDING validation (Task #11) - every item has a chain entry
+    for idx, item in enumerate(items):
+        item_id = item.get("item_id")
+        if not item_id:
+            errors.append(f"Item at index {idx}: missing item_id")
+            continue
+
+        if item_id not in chain_by_item_id:
+            errors.append(
+                f"UNBOUND item: '{item_id}' has no matching chain entry. "
+                f"Item is not covered by the hash chain and cannot be verified."
+            )
+            continue
+
+        # CROSS-REFERENCE validation (Task #13) - content_hash matches
+        chain_entry = chain_by_item_id[item_id]
+        item_content_hash = item.get("content_hash", "")
+        chain_content_hash = chain_entry.get("content_hash", "")
+
+        if item_content_hash != chain_content_hash:
+            errors.append(
+                f"Item '{item_id}': content_hash mismatch. "
+                f"Item has {item_content_hash[:20]}..., chain has {chain_content_hash[:20]}..."
+            )
+
+        # Verify content_type matches
+        item_content_type = item.get("content_type", "")
+        chain_content_type = chain_entry.get("content_type", "")
+        if item_content_type != chain_content_type:
+            errors.append(
+                f"Item '{item_id}': content_type mismatch. "
+                f"Item has '{item_content_type}', chain has '{chain_content_type}'"
+            )
+
+        # Verify sequence matches position
+        item_sequence = item.get("sequence")
+        chain_sequence = chain_entry.get("sequence")
+        if item_sequence != chain_sequence:
+            errors.append(
+                f"Item '{item_id}': sequence mismatch. "
+                f"Item has sequence {item_sequence}, chain has {chain_sequence}"
+            )
+
+    # Check for chain entries without items (orphaned chain entries)
+    item_ids = {item.get("item_id") for item in items if item.get("item_id")}
+    for chain_item_id in chain_by_item_id:
+        if chain_item_id not in item_ids:
+            errors.append(
+                f"ORPHAN chain entry: '{chain_item_id}' has no matching item. "
+                f"Chain entry references non-existent item."
+            )
+
+    return {
+        "valid": len(errors) == 0,
+        "errors": errors,
+        "items_checked": len(items),
+        "chain_entries_checked": len(chain),
+    }
 
 
 def verify_content_hashes(bundle: dict[str, Any]) -> dict[str, Any]:
@@ -420,7 +663,7 @@ def verify_content_hashes(bundle: dict[str, Any]) -> dict[str, Any]:
     """
     items = bundle.get("items", [])
     if not items:
-        return {"valid": True, "warnings": ["No evidence items"]}
+        return {"valid": False, "errors": ["No evidence items"]}
 
     errors: list[str] = []
     checked = 0

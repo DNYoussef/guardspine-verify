@@ -1,118 +1,46 @@
 {
-  "bundle_id": "test-valid-001",
-  "bead_id": "BEAD-TEST-001",
-  "artifact_id": "test:example/hello.py",
-  "from_version_id": "v1",
-  "to_version_id": "v2",
-  "risk_tier": "L2",
-  "scope": {
-    "assertion_type": "change_approval",
-    "assertion_text": "Test change reviewed and approved",
-    "artifact_id": "test:example/hello.py",
-    "version_from": "v1",
-    "version_to": "v2",
-    "policy_ids": ["test-policy-001"],
-    "risk_tier_assessed": "L2",
-    "assessment_date": "2024-01-15T10:00:00Z"
-  },
+  "bundle_id": "00000000-0000-0000-0000-000000000001",
+  "version": "0.2.0",
+  "created_at": "2026-02-02T00:00:00Z",
   "items": [
     {
-      "item_id": "i-001-diff",
-      "evidence_type": "diff",
-      "content_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "item_id": "item-1",
+      "content_type": "guardspine/test",
       "content": {
-        "diff_id": "diff-v1-v2",
-        "algorithm": "myers",
-        "from_hash": "sha256:abc123",
-        "to_hash": "sha256:def456",
-        "hunks": [
-          {
-            "old_start": 1,
-            "old_count": 1,
-            "new_start": 1,
-            "new_count": 2,
-            "lines": [
-              {"type": "context", "content": "def hello():"},
-              {"type": "add", "content": "    print('Hello, World!')"}
-            ]
-          }
-        ],
-        "stats": {"additions": 1, "deletions": 0, "changes": 1}
+        "ok": true
       },
-      "created_at": "2024-01-15T10:00:00Z"
+      "sequence": 0,
+      "content_hash": "sha256:4062edaf750fb8074e7e83e0c9028c94e32468a8b6f1614774328ef045150f93"
     },
     {
-      "item_id": "i-002-approval",
-      "evidence_type": "approval",
-      "content_hash": "sha256:d7a8fbb307d7809469ca9abcb0082e4f8d5651e46d3cdb762d02d0bf37c9e592",
+      "item_id": "item-2",
+      "content_type": "guardspine/test",
       "content": {
-        "approval_id": "APR-TEST-001",
-        "approver": {
-          "signer_id": "usr-test-user",
-          "signer_type": "human",
-          "display_name": "Test User",
-          "email": "test@example.com"
-        },
-        "decision": "approved",
-        "rationale": "Test approval for demonstration",
-        "decided_at": "2024-01-15T10:05:00Z"
+        "msg": "hello"
       },
-      "created_at": "2024-01-15T10:05:00Z"
-    }
-  ],
-  "signatures": [
-    {
-      "signature_id": "sig-001",
-      "algorithm": "ed25519",
-      "signer": {
-        "signer_id": "usr-test-user",
-        "signer_type": "human",
-        "display_name": "Test User",
-        "email": "test@example.com",
-        "public_key_id": "key-test-2024"
-      },
-      "signature_value": "MEUCIQD_TEST_SIGNATURE_PLACEHOLDER_FOR_DEMO_PURPOSES_ONLY_NOT_REAL_=",
-      "signed_at": "2024-01-15T10:06:00Z",
-      "content_hash": "sha256:combined_content_hash_placeholder"
+      "sequence": 1,
+      "content_hash": "sha256:faf0237414bb4de6d09919f02006843e237179c7a3a866d6cc77e967688d6e02"
     }
   ],
   "immutability_proof": {
-    "proof_id": "proof-test-001",
-    "bundle_id": "test-valid-001",
-    "root_hash": "sha256:a948904f2f0f479b8f8564cbf12dae5e65c9f2cd8cfb8c5a5d9a5e5b5c5d5e5f",
-    "hash_algorithm": "sha256",
-    "hash_chain": {
-      "chain_id": "chain-test-001",
-      "entries": [
-        {
-          "sequence_number": 0,
-          "content_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-          "previous_hash": null,
-          "timestamp": "2024-01-15T10:00:00Z",
-          "content_type": "diff",
-          "content_id": "i-001-diff"
-        },
-        {
-          "sequence_number": 1,
-          "content_hash": "sha256:d7a8fbb307d7809469ca9abcb0082e4f8d5651e46d3cdb762d02d0bf37c9e592",
-          "previous_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-          "timestamp": "2024-01-15T10:05:00Z",
-          "content_type": "approval",
-          "content_id": "i-002-approval"
-        }
-      ],
-      "created_at": "2024-01-15T10:00:00Z"
-    },
-    "verified_at": "2024-01-15T10:07:00Z",
-    "verification_status": "verified"
-  },
-  "retention": {
-    "policy": "standard",
-    "retention_days": 365,
-    "created_at": "2024-01-15T10:00:00Z",
-    "expires_at": "2025-01-15T10:00:00Z",
-    "legal_hold": false
-  },
-  "created_at": "2024-01-15T10:00:00Z",
-  "updated_at": "2024-01-15T10:07:00Z"
+    "hash_chain": [
+      {
+        "sequence": 0,
+        "item_id": "item-1",
+        "content_type": "guardspine/test",
+        "content_hash": "sha256:4062edaf750fb8074e7e83e0c9028c94e32468a8b6f1614774328ef045150f93",
+        "previous_hash": "genesis",
+        "chain_hash": "sha256:6a6a39c7dd267c4a874c7c9bb0c743b90206c4771f72a95b6c72c5862d38c6e4"
+      },
+      {
+        "sequence": 1,
+        "item_id": "item-2",
+        "content_type": "guardspine/test",
+        "content_hash": "sha256:faf0237414bb4de6d09919f02006843e237179c7a3a866d6cc77e967688d6e02",
+        "previous_hash": "sha256:6a6a39c7dd267c4a874c7c9bb0c743b90206c4771f72a95b6c72c5862d38c6e4",
+        "chain_hash": "sha256:5f65a30a38f8166e349f0e7fc78c3bc797a25a7025d974be19891e581e505062"
+      }
+    ],
+    "root_hash": "sha256:50cec3e4b6838df979bf039e2321af16e23da2acf42e80753779d31998fdbe3d"
+  }
 }
