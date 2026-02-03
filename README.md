@@ -6,6 +6,8 @@
 [![Python](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![PyPI](https://img.shields.io/pypi/v/guardspine-verify.svg)](https://pypi.org/project/guardspine-verify/)
 
+**Spec Version**: v0.2.0 | **Package Version**: 0.2.0
+
 ## Installation
 
 ```bash
@@ -43,12 +45,13 @@ guardspine-verify bundle1.json bundle2.json bundle3.json
 
 | Check | Description |
 |-------|-------------|
-| Hash Chain | Previous hash references match |
-| Root Hash | Computed Merkle root matches stored root |
-| Content Hashes | Each item's content hash is valid |
-| Signatures | Cryptographic signatures verify |
-| Sequence | Chain sequence numbers are contiguous |
-| AI Provenance | AI signer model IDs are present |
+| **Version** | Bundle version must be "0.2.0" |
+| **Hash Chain** | Each entry's `previous_hash` matches prior `chain_hash` |
+| **Chain Binding** | Chain entries map 1:1 to items (count, item_id, content_hash) |
+| **Root Hash** | Computed Merkle root matches stored root |
+| **Content Hashes** | Each item's content_hash matches SHA-256 of canonical JSON content |
+| **Sequence** | Chain sequence numbers are contiguous starting from 0 |
+| **Signatures** | Cryptographic signatures verify (Ed25519, RSA, ECDSA) |
 
 ## Exit Codes
 
@@ -61,17 +64,7 @@ guardspine-verify bundle1.json bundle2.json bundle3.json
 ## Python API
 
 ```python
-from guardspine_verify import verify_bundle, verify_bundle_data, VerificationResult
-
-# Verify a bundle file
-result: VerificationResult = verify_bundle("bundle.json")
-
-if result.verified:
-    print("Bundle verified!")
-    print(f"Evidence items: {result.item_count}")
-    print(f"Signatures: {result.signature_count}")
-else:
-    print(f"Verification failed: {result.errors}")
+from guardspine_verify import verify_bundle_data, VerificationResult
 
 # Verify bundle data directly
 import json
@@ -79,10 +72,20 @@ with open("bundle.json") as f:
     bundle = json.load(f)
 
 result = verify_bundle_data(bundle)
+
+if result.verified:
+    print("Bundle verified!")
+else:
+    print(f"Verification failed:")
+    for error in result.errors:
+        print(f"  - {error}")
+
 print(f"Status: {result.status}")
 print(f"Hash chain: {result.hash_chain_status}")
 print(f"Signatures: {result.signature_status}")
 ```
+
+**Note**: The `verify_bundle()` file-based API and `verify_bundles()` batch API are planned for a future release.
 
 ## Verification Result
 
