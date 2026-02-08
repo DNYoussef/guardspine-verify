@@ -736,8 +736,10 @@ def verify_root_hash(bundle: dict[str, Any]) -> dict[str, Any]:
             }
         chain_hash_values.append(ch)
 
-    concatenated = "".join(chain_hash_values).encode("utf-8")
-    computed_root = compute_sha256(concatenated)
+    h = hashlib.sha256()
+    for cv in chain_hash_values:
+        h.update(cv.encode("utf-8"))
+    computed_root = f"sha256:{h.hexdigest()}"
 
     if computed_root != stored_root:
         return {
