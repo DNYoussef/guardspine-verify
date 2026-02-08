@@ -1,4 +1,6 @@
+import base64
 import json
+import sys
 from copy import deepcopy
 from pathlib import Path
 
@@ -121,3 +123,148 @@ def test_fail_on_raw_entropy_flags_survivors():
     result = verify_bundle_data(bundle, check_sanitized=True, fail_on_raw_entropy=True)
     assert result.verified is False
     assert any("high-entropy survivor" in err for err in result.errors)
+
+
+def test_c6_require_signatures_rejects_without_crypto(tmp_path):
+    """C6: require_signatures=True must fail when no public_key is provided,
+    even if format-valid signatures are present."""
+    bundle = deepcopy(_load_vector("valid-bundle.json"))
+    bundle["signatures"] = [
+        {
+            "signature_id": "sig-fake-001",
+            "algorithm": "ed25519",
+            "signer": {"display_name": "test-signer", "signer_type": "service"},
+            "signature_value": base64.b64encode(b"x" * 64).decode(),
+            "signed_at": "2026-01-01T00:00:00Z",
+        }
+    ]
+    result = verify_bundle_data(bundle, require_signatures=True)
+    assert result.verified is False, (
+        "require_signatures=True with no public_key must reject, "
+        f"but got verified={result.verified}, errors={result.errors}"
+    )
+
+
+def test_c7_signed_bundle_entropy_skips_signature_fields():
+    """C7: Entropy scanner must NOT flag signature_value or other crypto fields."""
+    bundle = deepcopy(_load_vector("valid-bundle.json"))
+    bundle["version"] = "0.2.1"
+    # Add a format-valid signature with high-entropy base64 value
+    bundle["signatures"] = [
+        {
+            "signature_id": "sig-entropy-test",
+            "algorithm": "ed25519",
+            "signer": {"display_name": "ci-signer", "signer_type": "service"},
+            "signature_value": base64.b64encode(b"\xde\xad" * 48).decode(),
+            "signed_at": "2026-01-01T00:00:00Z",
+            "public_key_id": "key-AAAABBBBCCCCDDDDeeeeFFFF1234567890abcdef",
+        }
+    ]
+    bundle["sanitization"] = {
+        "engine_name": "pii-shield",
+        "engine_version": "1.1.0",
+        "method": "deterministic_hmac",
+        "token_format": "[HIDDEN:<id>]",
+        "salt_fingerprint": "sha256:1a2b3c4d",
+        "redaction_count": 0,
+        "redactions_by_type": {},
+        "status": "sanitized",
+    }
+    bundle = _reseal_bundle(bundle)
+
+    result = verify_bundle_data(bundle, check_sanitized=True, fail_on_raw_entropy=True)
+    # Should NOT fail due to signature fields being high-entropy
+    entropy_errors = [e for e in result.errors if "high-entropy survivor" in e]
+    assert len(entropy_errors) == 0, (
+        f"Entropy scanner flagged signature fields as survivors: {entropy_errors}"
+    )
+
+
+def test_h9_redaction_count_mismatch_is_error_when_require_sanitized():
+    """H9: redaction_count mismatch must be an error (not warning) when require_sanitized=True."""
+    bundle = deepcopy(_load_vector("valid-bundle.json"))
+    bundle["version"] = "0.2.1"
+    # Insert 2 HIDDEN tokens into content
+    bundle["items"][0]["content"]["msg"] = "masked [HIDDEN:aaa111] and [HIDDEN:bbb222] value"
+    bundle["sanitization"] = {
+        "engine_name": "pii-shield",
+        "engine_version": "1.1.0",
+        "method": "deterministic_hmac",
+        "token_format": "[HIDDEN:<id>]",
+        "salt_fingerprint": "sha256:1a2b3c4d",
+        "redaction_count": 5,  # claims 5 but only 2 exist
+        "redactions_by_type": {"email": 5},
+        "status": "sanitized",
+    }
+    bundle = _reseal_bundle(bundle)
+
+    result = verify_bundle_data(bundle, require_sanitized=True)
+    assert result.verified is False
+    mismatch_errors = [e for e in result.errors if "redaction_count=" in e]
+    assert len(mismatch_errors) > 0, (
+        f"Expected redaction_count mismatch in errors, got errors={result.errors}, warnings={result.warnings}"
+    )
+
+
+def test_h10_redaction_count_zero_still_detects_mismatch():
+    """H10: redaction_count=0 must still detect mismatch when HIDDEN tokens exist."""
+    bundle = deepcopy(_load_vector("valid-bundle.json"))
+    bundle["version"] = "0.2.1"
+    # Insert 3 HIDDEN tokens but claim 0 redactions
+    bundle["items"][0]["content"]["msg"] = "[HIDDEN:xxx111] [HIDDEN:yyy222] [HIDDEN:zzz333]"
+    bundle["sanitization"] = {
+        "engine_name": "pii-shield",
+        "engine_version": "1.1.0",
+        "method": "deterministic_hmac",
+        "token_format": "[HIDDEN:<id>]",
+        "salt_fingerprint": "sha256:1a2b3c4d",
+        "redaction_count": 0,  # claims 0 but 3 exist
+        "redactions_by_type": {},
+        "status": "sanitized",
+    }
+    bundle = _reseal_bundle(bundle)
+
+    # Without require_sanitized: mismatch should appear in warnings
+    result = verify_bundle_data(bundle, check_sanitized=True)
+    mismatch_warnings = [w for w in result.warnings if "redaction_count=0" in w]
+    assert len(mismatch_warnings) > 0, (
+        f"Expected redaction_count=0 mismatch in warnings, got warnings={result.warnings}"
+    )
+
+    # With require_sanitized: mismatch should appear in errors
+    result2 = verify_bundle_data(bundle, require_sanitized=True)
+    mismatch_errors = [e for e in result2.errors if "redaction_count=0" in e]
+    assert len(mismatch_errors) > 0, (
+        f"Expected redaction_count=0 mismatch in errors, got errors={result2.errors}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# CLI smoke tests
+# ---------------------------------------------------------------------------
+
+def test_cli_help_exits_zero():
+    """CLI --help should exit 0."""
+    import subprocess
+    result = subprocess.run(
+        [sys.executable, "-m", "guardspine_verify.cli", "--help"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, f"--help exited with {result.returncode}: {result.stderr}"
+    assert "GuardSpine" in result.stdout or "guardspine" in result.stdout.lower()
+
+
+def test_cli_verify_golden_vector_exits_zero():
+    """CLI should exit 0 when verifying the golden valid-bundle.json."""
+    import subprocess
+    vector_path = str(Path(__file__).parent / "test_vectors" / "valid-bundle.json")
+    result = subprocess.run(
+        [sys.executable, "-m", "guardspine_verify.cli", vector_path],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, (
+        f"CLI exited with {result.returncode} for valid-bundle.json.\n"
+        f"stdout: {result.stdout}\nstderr: {result.stderr}"
+    )

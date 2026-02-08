@@ -81,23 +81,30 @@ def compute_sha256(data: bytes) -> str:
     return f"sha256:{h}"
 
 
-HIDDEN_TOKEN_RE = re.compile(r"\[HIDDEN:[A-Za-z0-9_-]{6,32}\]")
-HIGH_ENTROPY_CANDIDATE_RE = re.compile(r"[A-Za-z0-9+/=_-]{24,}")
+HIDDEN_TOKEN_RE = re.compile(r"\[HIDDEN:[A-Za-z0-9_-]{6,64}\]")
+HIGH_ENTROPY_CANDIDATE_RE = re.compile(r"[A-Za-z0-9+/=_.\-]{24,}")
 HEX_64_RE = re.compile(r"^[a-f0-9]{64}$")
 
 
-def _walk_strings(value: Any):
+_ENTROPY_SKIP_KEYS = {"signatures", "signature_value", "public_key_id", "immutability_proof"}
+
+
+def _walk_strings(value: Any, _parent_key: str | None = None):
     """Yield all string values from arbitrarily nested JSON-like data."""
     if isinstance(value, str):
         yield value
         return
     if isinstance(value, list):
         for item in value:
-            yield from _walk_strings(item)
+            yield from _walk_strings(item, _parent_key)
         return
     if isinstance(value, dict):
-        for item in value.values():
-            yield from _walk_strings(item)
+        for key, item in value.items():
+            if key in _ENTROPY_SKIP_KEYS or key.endswith("_hash"):
+                continue
+            if isinstance(key, str):
+                yield key
+            yield from _walk_strings(item, key)
         return
 
 
@@ -147,7 +154,6 @@ def _find_entropy_survivors(bundle: dict[str, Any]) -> list[dict[str, Any]]:
             candidate = match.strip()
             if (
                 candidate in seen
-                or HIDDEN_TOKEN_RE.fullmatch(candidate)
                 or _looks_like_hash_or_digest(candidate)
                 or not _has_mixed_charset(candidate)
             ):
@@ -222,10 +228,12 @@ def verify_sanitization(
     for token in tokens:
         token_occurrences[token] = token_occurrences.get(token, 0) + 1
 
-    if redaction_count and len(tokens) != redaction_count:
-        warnings.append(
-            f"sanitization.redaction_count={redaction_count} but {len(tokens)} [HIDDEN:*] token occurrences were found"
-        )
+    if redaction_count is not None and len(tokens) != redaction_count:
+        msg = f"sanitization.redaction_count={redaction_count} but {len(tokens)} [HIDDEN:*] token occurrences were found"
+        if require_sanitized:
+            errors.append(msg)
+        else:
+            warnings.append(msg)
 
     survivors = _find_entropy_survivors(bundle)
     if survivors:
@@ -577,7 +585,7 @@ def verify_bundle_data(
         and binding_result["valid"]  # Chain-to-items binding
         and signature_result["valid"]
         and (sanitization_valid or not sanitization_checked)
-        and (not require_signatures or signature_result.get("cryptographically_verified", False) or signatures_present)
+        and (not require_signatures or signature_result.get("cryptographically_verified", False))
     )
 
     return VerificationResult(
@@ -710,7 +718,6 @@ def verify_root_hash(bundle: dict[str, Any]) -> dict[str, Any]:
         return {"valid": False, "errors": ["Empty hash chain"]}
 
     # Compute root hash as SHA-256 of concatenation of all chain_hash values
-    import re
     _HASH_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
     chain_hash_values: list[str] = []
     for idx, entry in enumerate(entries):

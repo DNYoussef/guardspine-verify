@@ -39,7 +39,7 @@ console = Console()
 @click.option(
     "--check-sanitized",
     is_flag=True,
-    help="Validate optional sanitization attestations and [HIDDEN:*] token consistency",
+    help="Validate optional sanitization attestations and [HIDDEN:<id>] token consistency",
 )
 @click.option(
     "--require-sanitized",

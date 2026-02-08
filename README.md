@@ -37,8 +37,6 @@ guardspine-verify bundle.json --verbose
 # Output JSON report
 guardspine-verify bundle.json --format json > report.json
 
-# Verify multiple bundles
-guardspine-verify bundle1.json bundle2.json bundle3.json
 ```
 
 ## What It Verifies
@@ -92,7 +90,7 @@ print(f"Hash chain: {result.hash_chain_status}")
 print(f"Signatures: {result.signature_status}")
 ```
 
-**Note**: The `verify_bundle()` file-based API and `verify_bundles()` batch API are planned for a future release.
+**Note**: A `verify_bundles()` batch API is planned for a future release.
 
 ## Verification Result
 
@@ -105,11 +103,10 @@ class VerificationResult:
     root_hash_status: str
     content_hash_status: str
     signature_status: str
-    item_count: int
-    signature_count: int
     errors: list[str]
     warnings: list[str]
     verified_at: datetime
+    details: dict[str, Any]
 ```
 
 ## Supported Algorithms
@@ -128,22 +125,6 @@ class VerificationResult:
 | JSON | `.json` | Single bundle file |
 | ZIP | `.zip` | Exported bundle package |
 | Directory | folder | Unpacked bundle with manifest |
-
-## Batch Verification
-
-```python
-from guardspine_verify import verify_bundles
-
-results = verify_bundles([
-    "bundle1.json",
-    "bundle2.json",
-    "bundle3.json",
-])
-
-for path, result in results.items():
-    status = "PASS" if result.verified else "FAIL"
-    print(f"{path}: {status}")
-```
 
 ## Integration with CI/CD
 
@@ -171,6 +152,39 @@ This verifier:
 - **Does not store any data**
 - **Is fully auditable** (open source)
 - **Has no external dependencies** for core verification
+
+## PII-Shield Integration
+
+guardspine-verify validates [PII-Shield](https://github.com/aragossa/pii-shield) sanitization attestations embedded in evidence bundles.
+
+### Why
+
+When bundles are sanitized before sealing (e.g., by codeguard-action or rlm-docsync), the `sanitization` block attests what engine was used, how many redactions were applied, and what token format was used. The verifier checks this attestation for consistency and can also detect secrets that survived sanitization via entropy analysis.
+
+### Where
+
+Sanitization verification runs inside `guardspine_verify/verifier.py` as an optional verification pass, controlled by CLI flags.
+
+### How
+
+```bash
+# Check sanitization attestation (warn on issues)
+guardspine-verify bundle.json --check-sanitized
+
+# Require sanitization (fail if missing or invalid)
+guardspine-verify bundle.json --require-sanitized
+
+# Treat post-sanitization high-entropy survivors as failures
+guardspine-verify bundle.json --require-sanitized --fail-on-raw-entropy
+```
+
+The verifier checks:
+- `sanitization.redaction_count` matches actual `[HIDDEN:<id>]` token count
+- `engine_version` is valid semver
+- `token_format` matches the tokens found in bundle content
+- High-entropy strings that survived sanitization (optional hard fail)
+
+GuardSpine's own hash fields (`content_hash`, `chain_hash`, `root_hash`, etc.) are excluded from entropy analysis to avoid false positives.
 
 ## Related Projects
 
