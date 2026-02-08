@@ -5,6 +5,7 @@ Core verification logic for GuardSpine evidence bundles.
 import hashlib
 import json
 import math
+import re
 import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -80,6 +81,171 @@ def compute_sha256(data: bytes) -> str:
     return f"sha256:{h}"
 
 
+HIDDEN_TOKEN_RE = re.compile(r"\[HIDDEN:[A-Za-z0-9_-]{6,32}\]")
+HIGH_ENTROPY_CANDIDATE_RE = re.compile(r"[A-Za-z0-9+/=_-]{24,}")
+HEX_64_RE = re.compile(r"^[a-f0-9]{64}$")
+
+
+def _walk_strings(value: Any):
+    """Yield all string values from arbitrarily nested JSON-like data."""
+    if isinstance(value, str):
+        yield value
+        return
+    if isinstance(value, list):
+        for item in value:
+            yield from _walk_strings(item)
+        return
+    if isinstance(value, dict):
+        for item in value.values():
+            yield from _walk_strings(item)
+        return
+
+
+def _shannon_entropy(text: str) -> float:
+    if not text:
+        return 0.0
+    counts: dict[str, int] = {}
+    for ch in text:
+        counts[ch] = counts.get(ch, 0) + 1
+    length = len(text)
+    entropy = 0.0
+    for count in counts.values():
+        p = count / length
+        entropy -= p * math.log2(p)
+    return entropy
+
+
+def _looks_like_hash_or_digest(candidate: str) -> bool:
+    low = candidate.lower()
+    if low.startswith("sha256:"):
+        return True
+    if HEX_64_RE.match(low):
+        return True
+    if low.startswith(("md5:", "sha1:", "sha512:")):
+        return True
+    return False
+
+
+def _has_mixed_charset(candidate: str) -> bool:
+    has_lower = any(c.islower() for c in candidate)
+    has_upper = any(c.isupper() for c in candidate)
+    has_digit = any(c.isdigit() for c in candidate)
+    has_symbol = any(not c.isalnum() for c in candidate)
+    return sum([has_lower, has_upper, has_digit, has_symbol]) >= 3
+
+
+def _find_entropy_survivors(bundle: dict[str, Any]) -> list[dict[str, Any]]:
+    """
+    Find likely secret-like survivors that escaped sanitization.
+
+    This is heuristic only and intentionally conservative to reduce false positives.
+    """
+    survivors: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for text in _walk_strings(bundle):
+        for match in HIGH_ENTROPY_CANDIDATE_RE.findall(text):
+            candidate = match.strip()
+            if (
+                candidate in seen
+                or HIDDEN_TOKEN_RE.fullmatch(candidate)
+                or _looks_like_hash_or_digest(candidate)
+                or not _has_mixed_charset(candidate)
+            ):
+                continue
+            entropy = _shannon_entropy(candidate)
+            if entropy < 4.0:
+                continue
+            seen.add(candidate)
+            survivors.append(
+                {
+                    "preview": candidate[:24] + ("..." if len(candidate) > 24 else ""),
+                    "length": len(candidate),
+                    "entropy": round(entropy, 3),
+                }
+            )
+    return survivors
+
+
+def verify_sanitization(
+    bundle: dict[str, Any],
+    require_sanitized: bool = False,
+    fail_on_raw_entropy: bool = False,
+) -> dict[str, Any]:
+    """
+    Verify optional sanitization attestation and redaction token consistency.
+    """
+    summary = bundle.get("sanitization")
+    if not summary:
+        if require_sanitized:
+            return {
+                "valid": False,
+                "errors": ["Missing sanitization block (required by policy)"],
+                "warnings": [],
+                "token_count": 0,
+                "unique_tokens": 0,
+                "token_occurrences": {},
+                "raw_entropy_survivors": [],
+            }
+        return {
+            "valid": True,
+            "errors": [],
+            "warnings": ["No sanitization block present"],
+            "token_count": 0,
+            "unique_tokens": 0,
+            "token_occurrences": {},
+            "raw_entropy_survivors": [],
+        }
+
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    for field in ("engine_name", "engine_version", "method", "token_format", "status"):
+        if not isinstance(summary.get(field), str) or not summary.get(field):
+            errors.append(f"sanitization.{field} must be a non-empty string")
+
+    redaction_count = summary.get("redaction_count")
+    if not isinstance(redaction_count, int) or redaction_count < 0:
+        errors.append("sanitization.redaction_count must be a non-negative integer")
+        redaction_count = 0
+
+    if not isinstance(summary.get("redactions_by_type"), dict):
+        errors.append("sanitization.redactions_by_type must be an object")
+
+    if summary.get("token_format") != "[HIDDEN:<id>]":
+        warnings.append("sanitization.token_format differs from canonical [HIDDEN:<id>] declaration")
+
+    tokens: list[str] = []
+    for text in _walk_strings(bundle):
+        tokens.extend(HIDDEN_TOKEN_RE.findall(text))
+
+    token_occurrences: dict[str, int] = {}
+    for token in tokens:
+        token_occurrences[token] = token_occurrences.get(token, 0) + 1
+
+    if redaction_count and len(tokens) != redaction_count:
+        warnings.append(
+            f"sanitization.redaction_count={redaction_count} but {len(tokens)} [HIDDEN:*] token occurrences were found"
+        )
+
+    survivors = _find_entropy_survivors(bundle)
+    if survivors:
+        msg = f"Detected {len(survivors)} high-entropy survivor candidate(s) after sanitization"
+        if fail_on_raw_entropy:
+            errors.append(msg)
+        else:
+            warnings.append(msg)
+
+    return {
+        "valid": len(errors) == 0,
+        "errors": errors,
+        "warnings": warnings,
+        "token_count": len(tokens),
+        "unique_tokens": len(token_occurrences),
+        "token_occurrences": token_occurrences,
+        "raw_entropy_survivors": survivors,
+    }
+
+
 def _validate_public_key_pem(public_key_pem: bytes) -> None:
     """
     Validate that the provided bytes are a well-formed PEM public key.
@@ -111,6 +277,9 @@ def verify_bundle(
     public_key_pem: bytes | None = None,
     hmac_secret: bytes | None = None,
     require_signatures: bool = False,
+    check_sanitized: bool = False,
+    require_sanitized: bool = False,
+    fail_on_raw_entropy: bool = False,
 ) -> VerificationResult:
     """
     Verify a bundle from a file path.
@@ -124,6 +293,9 @@ def verify_bundle(
         public_key_pem: Optional PEM-encoded public key for signature verification
         hmac_secret: Optional HMAC secret for HMAC-SHA256 signature verification
         require_signatures: If True, bundle MUST have valid signatures to pass
+        check_sanitized: If True, evaluate sanitization attestations and token consistency
+        require_sanitized: If True, fail verification if sanitization block is missing/invalid
+        fail_on_raw_entropy: If True, entropy survivor candidates become hard failures
 
     Returns:
         VerificationResult with verification status
@@ -178,6 +350,9 @@ def verify_bundle(
             public_key_pem=public_key_pem,
             hmac_secret=hmac_secret,
             require_signatures=require_signatures,
+            check_sanitized=check_sanitized,
+            require_sanitized=require_sanitized,
+            fail_on_raw_entropy=fail_on_raw_entropy,
         )
 
     except json.JSONDecodeError as e:
@@ -260,7 +435,7 @@ def _load_zip_bundle(path: Path) -> dict[str, Any]:
 
 
 # Supported bundle versions
-SUPPORTED_VERSIONS = ["0.2.0"]
+SUPPORTED_VERSIONS = ["0.2.0", "0.2.1"]
 
 
 def verify_bundle_data(
@@ -268,6 +443,9 @@ def verify_bundle_data(
     public_key_pem: bytes | None = None,
     hmac_secret: bytes | None = None,
     require_signatures: bool = False,
+    check_sanitized: bool = False,
+    require_sanitized: bool = False,
+    fail_on_raw_entropy: bool = False,
 ) -> VerificationResult:
     """
     Verify a bundle from its data dictionary.
@@ -278,12 +456,16 @@ def verify_bundle_data(
     3. Root hash validation
     4. Content hash validation
     5. Signature verification (cryptographic if public_key provided)
+    6. Optional sanitization policy checks (if enabled)
 
     Args:
         bundle: Bundle data as dictionary
         public_key_pem: Optional PEM-encoded public key for cryptographic verification
         hmac_secret: Optional HMAC secret for HMAC-SHA256 signature verification
         require_signatures: If True, bundle MUST have valid signatures to pass
+        check_sanitized: If True, evaluate sanitization attestations and token consistency
+        require_sanitized: If True, fail when sanitization block is missing/invalid
+        fail_on_raw_entropy: If True, entropy survivor candidates become hard failures
 
     Returns:
         VerificationResult with verification status
@@ -370,6 +552,21 @@ def verify_bundle_data(
             )
             signature_status = "unverified"
 
+    # 6. Optional sanitization checks
+    sanitization_checked = check_sanitized or require_sanitized or fail_on_raw_entropy
+    sanitization_valid = True
+    if sanitization_checked:
+        sanitization_result = verify_sanitization(
+            bundle,
+            require_sanitized=require_sanitized,
+            fail_on_raw_entropy=fail_on_raw_entropy,
+        )
+        details["sanitization"] = sanitization_result
+        sanitization_valid = sanitization_result.get("valid", False)
+        if not sanitization_valid:
+            errors.extend(sanitization_result.get("errors", []))
+        warnings.extend(sanitization_result.get("warnings", []))
+
     # Overall result
     version_valid = version in SUPPORTED_VERSIONS if version else False
     all_valid = (
@@ -379,6 +576,7 @@ def verify_bundle_data(
         and content_hash_result["valid"]
         and binding_result["valid"]  # Chain-to-items binding
         and signature_result["valid"]
+        and (sanitization_valid or not sanitization_checked)
         and (not require_signatures or signature_result.get("cryptographically_verified", False) or signatures_present)
     )
 

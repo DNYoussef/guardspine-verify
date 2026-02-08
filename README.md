@@ -6,7 +6,7 @@
 [![Python](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![PyPI](https://img.shields.io/pypi/v/guardspine-verify.svg)](https://pypi.org/project/guardspine-verify/)
 
-**Spec Version**: v0.2.0 | **Package Version**: 0.2.0
+**Spec Version**: v0.2.0 + v0.2.1 | **Package Version**: 0.2.1
 
 ## Installation
 
@@ -45,13 +45,20 @@ guardspine-verify bundle1.json bundle2.json bundle3.json
 
 | Check | Description |
 |-------|-------------|
-| **Version** | Bundle version must be "0.2.0" |
+| **Version** | Bundle version must be one of `0.2.0`, `0.2.1` |
 | **Hash Chain** | Each entry's `previous_hash` matches prior `chain_hash` |
 | **Chain Binding** | Chain entries map 1:1 to items (count, item_id, content_hash) |
 | **Root Hash** | Computed Merkle root matches stored root |
 | **Content Hashes** | Each item's content_hash matches SHA-256 of canonical JSON content |
 | **Sequence** | Chain sequence numbers are contiguous starting from 0 |
 | **Signatures** | Cryptographic signatures verify (Ed25519, RSA, ECDSA) |
+| **Sanitization (optional)** | `--check-sanitized` validates redaction metadata and token consistency |
+
+CLI sanitization flags:
+
+- `--check-sanitized`: evaluate optional `sanitization` contract and `[HIDDEN:*]` token consistency
+- `--require-sanitized`: fail if sanitization block is missing or invalid
+- `--fail-on-raw-entropy`: treat post-sanitization high-entropy survivors as hard failures
 
 ## Exit Codes
 

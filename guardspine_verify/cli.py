@@ -36,8 +36,31 @@ console = Console()
     default=None,
     help="Path to PEM public key for cryptographic signature verification",
 )
+@click.option(
+    "--check-sanitized",
+    is_flag=True,
+    help="Validate optional sanitization attestations and [HIDDEN:*] token consistency",
+)
+@click.option(
+    "--require-sanitized",
+    is_flag=True,
+    help="Fail verification if sanitization block is missing or invalid",
+)
+@click.option(
+    "--fail-on-raw-entropy",
+    is_flag=True,
+    help="Treat high-entropy survivor candidates as hard failures when checking sanitization",
+)
 @click.version_option(__version__, prog_name="guardspine-verify")
-def main(bundle_path: str, verbose: bool, output_format: str, public_key_path: str | None) -> None:
+def main(
+    bundle_path: str,
+    verbose: bool,
+    output_format: str,
+    public_key_path: str | None,
+    check_sanitized: bool,
+    require_sanitized: bool,
+    fail_on_raw_entropy: bool,
+) -> None:
     """
     Verify a GuardSpine evidence bundle.
 
@@ -52,6 +75,7 @@ def main(bundle_path: str, verbose: bool, output_format: str, public_key_path: s
       guardspine-verify report.json
       guardspine-verify report.json --public-key signer.pub
       guardspine-verify bundle.zip -k signer.pub --verbose
+      guardspine-verify bundle.json --check-sanitized --fail-on-raw-entropy
     """
     path = Path(bundle_path)
 
@@ -67,8 +91,17 @@ def main(bundle_path: str, verbose: bool, output_format: str, public_key_path: s
             console.print("[red]Error: Public key file does not appear to be PEM-encoded.[/red]")
             sys.exit(2)
 
+    if require_sanitized:
+        check_sanitized = True
+
     if output_format == "json":
-        result = verify_bundle(path, public_key_pem=public_key_pem)
+        result = verify_bundle(
+            path,
+            public_key_pem=public_key_pem,
+            check_sanitized=check_sanitized,
+            require_sanitized=require_sanitized,
+            fail_on_raw_entropy=fail_on_raw_entropy,
+        )
         output = {
             "verified": result.verified,
             "status": result.status,
@@ -81,6 +114,9 @@ def main(bundle_path: str, verbose: bool, output_format: str, public_key_path: s
             "warnings": result.warnings,
             "verified_at": result.verified_at.isoformat(),
         }
+        if "sanitization" in result.details:
+            output["sanitization_status"] = "verified" if result.details["sanitization"].get("valid") else "mismatch"
+            output["sanitization"] = result.details["sanitization"]
         if verbose:
             output["details"] = result.details
         click.echo(json.dumps(output, indent=2))
@@ -98,7 +134,13 @@ def main(bundle_path: str, verbose: bool, output_format: str, public_key_path: s
     )
     console.print()
 
-    result = verify_bundle(path, public_key_pem=public_key_pem)
+    result = verify_bundle(
+        path,
+        public_key_pem=public_key_pem,
+        check_sanitized=check_sanitized,
+        require_sanitized=require_sanitized,
+        fail_on_raw_entropy=fail_on_raw_entropy,
+    )
 
     # Status table
     table = Table(title="Verification Results", show_header=True)
@@ -134,6 +176,13 @@ def main(bundle_path: str, verbose: bool, output_format: str, public_key_path: s
         status_icon(result.signature_status),
         _get_detail(result.details.get("signatures", {})),
     )
+    if "sanitization" in result.details:
+        sanitization_status = "verified" if result.details["sanitization"].get("valid") else "mismatch"
+        table.add_row(
+            "Sanitization",
+            status_icon(sanitization_status),
+            _get_sanitization_detail(result.details["sanitization"]),
+        )
 
     console.print(table)
     console.print()
@@ -193,6 +242,17 @@ def _get_detail(detail: dict) -> str:
         if crypto_count > 0:
             return f"{crypto_count}/{total} cryptographically verified"
         return f"{detail['signatures_checked']}/{total} format validated"
+    if detail.get("warnings"):
+        return detail["warnings"][0]
+    return ""
+
+
+def _get_sanitization_detail(detail: dict) -> str:
+    """Extract sanitization summary detail string."""
+    token_count = detail.get("token_count")
+    unique_tokens = detail.get("unique_tokens")
+    if isinstance(token_count, int) and isinstance(unique_tokens, int):
+        return f"{token_count} token occurrences ({unique_tokens} unique)"
     if detail.get("warnings"):
         return detail["warnings"][0]
     return ""
