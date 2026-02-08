@@ -10,7 +10,7 @@ import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, TypedDict
 
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519, ec, rsa, padding
@@ -32,6 +32,15 @@ class VerificationResult:
     warnings: list[str] = field(default_factory=list)
     verified_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     details: dict[str, Any] = field(default_factory=dict)
+
+
+class SubVerificationResult(TypedDict, total=False):
+    """Return type for individual verification sub-checks."""
+    valid: bool
+    errors: list[str]
+    entries_checked: int
+    computed: str
+    stored: str
 
 
 def canonical_json(obj: Any) -> bytes:
@@ -613,7 +622,7 @@ def _extract_chain_entries(proof: dict[str, Any]) -> list[dict[str, Any]]:
     return []
 
 
-def verify_hash_chain(bundle: dict[str, Any]) -> dict[str, Any]:
+def verify_hash_chain(bundle: dict[str, Any]) -> SubVerificationResult:
     """
     Verify the hash chain integrity (v0.2.0 schema).
 
@@ -692,7 +701,7 @@ def verify_hash_chain(bundle: dict[str, Any]) -> dict[str, Any]:
     return {"valid": len(errors) == 0, "errors": errors, "entries_checked": len(entries)}
 
 
-def verify_root_hash(bundle: dict[str, Any]) -> dict[str, Any]:
+def verify_root_hash(bundle: dict[str, Any]) -> SubVerificationResult:
     """
     Verify the Merkle root hash.
 
@@ -752,7 +761,7 @@ def verify_root_hash(bundle: dict[str, Any]) -> dict[str, Any]:
     return {"valid": True, "computed": computed_root, "stored": stored_root}
 
 
-def verify_chain_to_items_binding(bundle: dict[str, Any]) -> dict[str, Any]:
+def verify_chain_to_items_binding(bundle: dict[str, Any]) -> SubVerificationResult:
     """
     Verify chain-to-items BINDING: every item has a matching chain entry.
 
@@ -855,7 +864,7 @@ def verify_chain_to_items_binding(bundle: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def verify_content_hashes(bundle: dict[str, Any]) -> dict[str, Any]:
+def verify_content_hashes(bundle: dict[str, Any]) -> SubVerificationResult:
     """
     Verify content hashes of all evidence items.
 
@@ -905,7 +914,7 @@ def verify_signatures(
     bundle: dict[str, Any],
     public_key_pem: bytes | None = None,
     hmac_secret: bytes | None = None,
-) -> dict[str, Any]:
+) -> SubVerificationResult:
     """
     Verify cryptographic signatures.
 
