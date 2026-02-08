@@ -19,9 +19,10 @@ from .verifier import (
     verify_root_hash,
     verify_content_hashes,
     verify_signatures,
+    verify_sanitization,
 )
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 __all__ = [
     "VerificationResult",
     "verify_bundle",
@@ -30,4 +31,5 @@ __all__ = [
     "verify_root_hash",
     "verify_content_hashes",
     "verify_signatures",
+    "verify_sanitization",
 ]
