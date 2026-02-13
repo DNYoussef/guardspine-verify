@@ -10,7 +10,8 @@ import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional, TypedDict
+from typing import Any, Optional, TypedDict, Union
+
 
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519, ec, rsa, padding
@@ -98,7 +99,7 @@ HEX_64_RE = re.compile(r"^[a-f0-9]{64}$")
 _ENTROPY_SKIP_KEYS = {"signatures", "signature_value", "public_key_id", "immutability_proof"}
 
 
-def _walk_strings(value: Any, _parent_key: str | None = None):
+def _walk_strings(value: Any, _parent_key: Optional[str] = None):
     """Yield all string values from arbitrarily nested JSON-like data."""
     if isinstance(value, str):
         yield value
@@ -290,9 +291,9 @@ def _validate_public_key_pem(public_key_pem: bytes) -> None:
 
 
 def verify_bundle(
-    path: str | Path,
-    public_key_pem: bytes | None = None,
-    hmac_secret: bytes | None = None,
+    path: Union[str, Path],
+    public_key_pem: Optional[bytes] = None,
+    hmac_secret: Optional[bytes] = None,
     require_signatures: bool = False,
     check_sanitized: bool = False,
     require_sanitized: bool = False,
@@ -457,8 +458,8 @@ SUPPORTED_VERSIONS = ["0.2.0", "0.2.1"]
 
 def verify_bundle_data(
     bundle: dict[str, Any],
-    public_key_pem: bytes | None = None,
-    hmac_secret: bytes | None = None,
+    public_key_pem: Optional[bytes] = None,
+    hmac_secret: Optional[bytes] = None,
     require_signatures: bool = False,
     check_sanitized: bool = False,
     require_sanitized: bool = False,
@@ -912,8 +913,8 @@ def verify_content_hashes(bundle: dict[str, Any]) -> SubVerificationResult:
 
 def verify_signatures(
     bundle: dict[str, Any],
-    public_key_pem: bytes | None = None,
-    hmac_secret: bytes | None = None,
+    public_key_pem: Optional[bytes] = None,
+    hmac_secret: Optional[bytes] = None,
 ) -> SubVerificationResult:
     """
     Verify cryptographic signatures.

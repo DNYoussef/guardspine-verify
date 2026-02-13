@@ -6,7 +6,10 @@ import json
 import sys
 from pathlib import Path
 
+from typing import Optional
+
 import click
+
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
@@ -56,7 +59,7 @@ def main(
     bundle_path: str,
     verbose: bool,
     output_format: str,
-    public_key_path: str | None,
+    public_key_path: Optional[str],
     check_sanitized: bool,
     require_sanitized: bool,
     fail_on_raw_entropy: bool,
@@ -80,7 +83,7 @@ def main(
     path = Path(bundle_path)
 
     # Load and validate public key if provided
-    public_key_pem: bytes | None = None
+    public_key_pem: Optional[bytes] = None
     if public_key_path:
         try:
             public_key_pem = Path(public_key_path).read_bytes()
