@@ -186,6 +186,10 @@ The verifier checks:
 
 GuardSpine's own hash fields (`content_hash`, `chain_hash`, `root_hash`, etc.) are excluded from entropy analysis to avoid false positives.
 
+## Cross-Language Parity
+
+guardspine-verify includes golden vector tests that validate hash parity with the canonical TypeScript kernel (`@guardspine/kernel`). The test suite loads `guardspine-spec/fixtures/golden-vectors/v0.2.0.json` and verifies that the Python implementation produces byte-identical content hashes, chain hashes, and root hash. This guarantees that bundles sealed by any language implementation can be verified by any other.
+
 ## Related Projects
 
 | Project | Description |
