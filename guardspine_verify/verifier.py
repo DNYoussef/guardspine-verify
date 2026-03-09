@@ -45,44 +45,13 @@ class SubVerificationResult(TypedDict, total=False):
 
 
 def canonical_json(obj: Any) -> bytes:
-    """Convert object to canonical JSON bytes (RFC 8785 compatible subset)."""
-    return _serialize_value(obj).encode("utf-8")
+    """Convert object to canonical JSON bytes (RFC 8785).
 
-
-def _serialize_value(value: Any) -> str:
-    if value is None:
-        return "null"
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, (int, float)):
-        return _serialize_number(value)
-    if isinstance(value, str):
-        return json.dumps(value, ensure_ascii=False)
-    if isinstance(value, list):
-        return "[" + ",".join(_serialize_value(v) for v in value) + "]"
-    if isinstance(value, dict):
-        items = []
-        for key in sorted(value.keys()):
-            items.append(json.dumps(str(key), ensure_ascii=False) + ":" + _serialize_value(value[key]))
-        return "{" + ",".join(items) + "}"
-    # Fallback for non-JSON types
-    return "null"
-
-
-def _serialize_number(num: float) -> str:
-    if isinstance(num, bool):
-        return "true" if num else "false"
-    if isinstance(num, int):
-        return str(num)
-    if not math.isfinite(num):
-        return "null"
-    # Align with @guardspine/kernel canonicalization rules.
-    if num.is_integer():
-        # Only emit non-exponent integers within safe range
-        if abs(num) < 9_007_199_254_740_991 and abs(num) < 1e20:
-            return str(int(num))
-    # Use JSON serialization for floats (matches JS JSON.stringify)
-    return json.dumps(num, ensure_ascii=False)
+    Delegates to guardspine-kernel for the canonical serialization,
+    then encodes to UTF-8 bytes (this module's callers expect bytes).
+    """
+    from guardspine_kernel.canonical import canonical_json as _kernel_canonical
+    return _kernel_canonical(obj).encode("utf-8")
 
 
 def compute_sha256(data: bytes) -> str:
