@@ -96,6 +96,54 @@ def test_verify_sanitization_block_when_check_enabled():
     assert result.details["sanitization"]["token_count"] == 1
 
 
+def test_verify_accepts_codeguard_confidence_metadata():
+    bundle = deepcopy(_load_vector("valid-bundle.json"))
+    bundle["version"] = "0.2.1"
+    bundle["items"][0]["content"] = {
+        "event_type": "analysis_completed",
+        "timestamp": "2026-03-19T00:00:00Z",
+        "actor": "guardspine-codeguard",
+        "data": {
+            "files_changed": 3,
+            "lines_added": 18,
+            "confidence_calibration": {
+                "enabled": True,
+                "source": "black_box_calibrator_v1",
+                "artifact_version": "1.0",
+                "calibrated_verdict_p_correct": 0.7421,
+            },
+        },
+    }
+    bundle["analysis_snapshot"] = {
+        "preliminary_tier": "L3",
+        "models_used": 2,
+        "confidence_calibration": {
+            "enabled": True,
+            "source": "black_box_calibrator_v1",
+            "calibrated_verdict_p_correct": 0.7421,
+        },
+        "multi_model_review": {
+            "confidence_calibration": {
+                "enabled": True,
+                "source": "black_box_calibrator_v1",
+                "calibrated_verdict_p_correct": 0.7421,
+            }
+        },
+    }
+    bundle["summary"] = {
+        "risk_tier": "L3",
+        "risk_drivers": ["database"],
+        "findings": [],
+        "rationale": "Needs reviewer attention",
+        "requires_approval": True,
+    }
+    bundle = _reseal_bundle(bundle)
+
+    result = verify_bundle_data(bundle)
+    assert result.verified is True
+    assert result.status == "verified"
+
+
 def test_require_sanitized_fails_when_missing():
     bundle = _load_vector("valid-bundle.json")
     result = verify_bundle_data(bundle, require_sanitized=True)
