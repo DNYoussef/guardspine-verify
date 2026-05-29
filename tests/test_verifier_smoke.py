@@ -1,11 +1,17 @@
 import base64
+import hashlib
+import hmac
 import json
 import sys
 from copy import deepcopy
 from pathlib import Path
 
 from guardspine_verify import verify_bundle_data
-from guardspine_verify.verifier import canonical_json, compute_sha256
+from guardspine_verify.verifier import (
+    _build_content_for_verification,
+    canonical_json,
+    compute_sha256,
+)
 
 
 def _load_vector(name: str) -> dict:
@@ -55,6 +61,46 @@ def test_verify_rejects_tampered_bundle_vector():
     assert result.verified is False
     assert result.status in ("mismatch", "error")
     assert result.errors
+
+
+def test_verify_rejects_bad_genesis_previous_hash():
+    bundle = deepcopy(_load_vector("valid-bundle.json"))
+    first = bundle["immutability_proof"]["hash_chain"][0]
+    first["previous_hash"] = "not-genesis"
+    chain_input = (
+        f"0|{first['item_id']}|{first['content_type']}|"
+        f"{first['content_hash']}|{first['previous_hash']}"
+    ).encode("utf-8")
+    first["chain_hash"] = compute_sha256(chain_input)
+    bundle["immutability_proof"]["root_hash"] = compute_sha256(
+        "".join(entry["chain_hash"] for entry in bundle["immutability_proof"]["hash_chain"]).encode("utf-8")
+    )
+
+    result = verify_bundle_data(bundle)
+    assert result.verified is False
+    assert any("expected previous_hash=genesis" in err for err in result.errors)
+
+
+def test_verify_accepts_base64_hmac_signature():
+    bundle = deepcopy(_load_vector("valid-bundle.json"))
+    secret = b"test-hmac-secret"
+    digest = hmac.new(
+        secret,
+        _build_content_for_verification(bundle),
+        hashlib.sha256,
+    ).digest()
+    bundle["signatures"] = [
+        {
+            "signature_id": "sig-hmac-b64",
+            "algorithm": "hmac-sha256",
+            "signer": {"display_name": "test", "signer_type": "service"},
+            "signature_value": base64.b64encode(digest).decode("ascii"),
+            "signed_at": "2026-01-01T00:00:00Z",
+        }
+    ]
+
+    result = verify_bundle_data(bundle, require_signatures=True, hmac_secret=secret)
+    assert result.verified is True
 
 
 def test_verify_external_signed_bundle_with_pem():

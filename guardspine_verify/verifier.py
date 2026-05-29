@@ -645,8 +645,13 @@ def verify_hash_chain(bundle: dict[str, Any]) -> SubVerificationResult:
         content_hash = entry.get("content_hash", "")
         prev_hash = entry.get("previous_hash", "")
 
-        # Verify previous_hash linkage
-        if i > 0 and prev_hash != previous_hash:
+        # Verify previous_hash linkage, including the genesis link.
+        if i == 0 and prev_hash != "genesis":
+            errors.append(
+                f"Hash chain broken at sequence 0: "
+                f"expected previous_hash=genesis, got {prev_hash}"
+            )
+        elif i > 0 and prev_hash != previous_hash:
             errors.append(
                 f"Hash chain broken at sequence {i}: "
                 f"expected previous_hash={previous_hash}, got {prev_hash}"
@@ -979,9 +984,13 @@ def verify_signatures(
                 continue
             import hmac as hmac_mod
             content_to_verify = _build_content_for_verification(bundle)
-            expected_mac = hmac_mod.new(hmac_secret, content_to_verify, hashlib.sha256).hexdigest()
-            # signature_value may be hex or base64-encoded hex
-            if hmac_mod.compare_digest(expected_mac, signature_value):
+            expected_digest = hmac_mod.new(hmac_secret, content_to_verify, hashlib.sha256).digest()
+            expected_hex = expected_digest.hex()
+            expected_b64 = base64.b64encode(expected_digest).decode("ascii")
+            if (
+                hmac_mod.compare_digest(expected_hex, signature_value)
+                or hmac_mod.compare_digest(expected_b64, signature_value)
+            ):
                 crypto_verified_count += 1
                 verified_count += 1
             else:
