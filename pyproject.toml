@@ -7,7 +7,7 @@ name = "guardspine-verify"
 version = "2.0.0"
 description = "Offline verification for GuardSpine evidence bundles"
 readme = "README.md"
-license = "Apache-2.0"
+license = "BUSL-1.1"
 requires-python = ">=3.9"
 authors = [
     { name = "GuardSpine Contributors" }
@@ -17,7 +17,7 @@ classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Intended Audience :: System Administrators",
-    "License :: OSI Approved :: Apache Software License",
+    "License :: Other/Proprietary License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.9",
