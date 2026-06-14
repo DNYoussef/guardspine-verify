@@ -2,7 +2,7 @@
 
 > **Verify GuardSpine evidence bundles offline -- no trust required.**
 
-[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-BSL%201.1-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![PyPI](https://img.shields.io/pypi/v/guardspine-verify.svg)](https://pypi.org/project/guardspine-verify/)
 
@@ -331,4 +331,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-Apache 2.0 -- See [LICENSE](LICENSE).
+Business Source License 1.1 (source-available) -- see [LICENSE](LICENSE). You may always use this verifier to verify, validate, or audit GuardSpine evidence -- commercially and free of charge -- so anyone can check our evidence without having to trust us. Other production use is free for non-commercial, evaluation, and small-organization use (annual revenue under USD 1,000,000); otherwise a commercial license applies. Converts to Apache-2.0 four years after each release.
